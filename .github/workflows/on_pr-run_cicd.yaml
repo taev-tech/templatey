@@ -8,7 +8,7 @@ on:
 env:
   NODE_VERSION_FOR_LINTING: "20.11.1"
   PYTHON_VERSION_FOR_LINTING: "3.13"
-  UV_VERSION: "0.6.2"
+  UV_VERSION: "0.8.6"
 
 jobs:
   lint:

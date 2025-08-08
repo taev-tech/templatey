@@ -37,8 +37,7 @@ lint = [
 ]
 
 repl = [
-    "ipython >= 8.8.0",
-    "wat-inspector >= 0.3.2"
+    "wat-inspector >= 0.3.2",
 ]
 
 [tool.uv]
