@@ -25,12 +25,16 @@ from templatey.parser import LiteralTemplateString
 from templatey.parser import ParsedTemplateResource
 from templatey.parser import parse
 from templatey.prebaked.loaders import DictTemplateLoader
+from templatey.prebaked.loaders import InlineStringTemplateLoader
+from templatey.prebaked.template_configs import html
 from templatey.renderer import FuncExecutionRequest
 from templatey.renderer import FuncExecutionResult
 from templatey.templates import SegmentModifier
 from templatey.templates import template
 
 from templatey_testutils import fake_template_config
+
+_inline_loader = InlineStringTemplateLoader()
 
 
 def href(val: str) -> tuple[str, ...]:
@@ -69,6 +73,14 @@ class FakeGlobalTemplate:
     That being said, I've since added a workaround for that, so... I
     guess this could be moved back into a closure if desired.
     """
+    foo: Var[str]
+
+
+@template(
+    html,
+    '<em>my super special inline template {var.foo}</em>',
+    loader=_inline_loader)
+class InlineTemplate:
     foo: Var[str]
 
 
@@ -117,6 +129,29 @@ class TestRenderEnvironment:
         with patch.object(render_env, '_parse_and_cache', pnc_mock):
             result = render_env.load_sync(FakeTemplate)
         assert loader_mock.call_count == 1
+        assert pnc_mock.call_count == 1
+        assert result is pnc_mock.return_value
+
+    def test_load_sync_with_explicit_loader(self):
+        """Load sync with an explicit loader must correctly bypass the
+        environment loader and load the template directly from the
+        explicit loader.
+        """
+        loader = DictTemplateLoader(templates={})
+        env_loader_mock = Mock(spec=loader.load_sync, wraps=loader.load_sync)
+        loader.load_sync = env_loader_mock
+        expl_loader_mock = Mock(
+            spec=_inline_loader.load_sync, wraps=_inline_loader.load_sync)
+
+        render_env = RenderEnvironment(template_loader=loader)
+        pnc_mock = Mock(spec=render_env._parse_and_cache)
+        with patch.object(
+            render_env, '_parse_and_cache', pnc_mock
+        ), patch.object(_inline_loader, 'load_sync', expl_loader_mock):
+            result = render_env.load_sync(InlineTemplate)
+
+        assert env_loader_mock.call_count == 0
+        assert expl_loader_mock.call_count == 1
         assert pnc_mock.call_count == 1
         assert result is pnc_mock.return_value
 
@@ -181,6 +216,30 @@ class TestRenderEnvironment:
         with patch.object(render_env, '_parse_and_cache', pnc_mock):
             result = await render_env.load_async(FakeTemplate)
         assert loader_mock.call_count == 1
+        assert pnc_mock.call_count == 1
+        assert result is pnc_mock.return_value
+
+    @pytest.mark.anyio
+    async def test_load_async_with_explicit_loader(self):
+        """Load async with an explicit loader must correctly bypass the
+        environment loader and load the template directly from the
+        explicit loader.
+        """
+        loader = DictTemplateLoader(templates={})
+        env_loader_mock = Mock(spec=loader.load_async, wraps=loader.load_async)
+        loader.load_async = env_loader_mock
+        expl_loader_mock = Mock(
+            spec=_inline_loader.load_async, wraps=_inline_loader.load_async)
+
+        render_env = RenderEnvironment(template_loader=loader)
+        pnc_mock = Mock(spec=render_env._parse_and_cache)
+        with patch.object(
+            render_env, '_parse_and_cache', pnc_mock
+        ), patch.object(_inline_loader, 'load_async', expl_loader_mock):
+            result = await render_env.load_async(InlineTemplate)
+
+        assert env_loader_mock.call_count == 0
+        assert expl_loader_mock.call_count == 1
         assert pnc_mock.call_count == 1
         assert result is pnc_mock.return_value
 
