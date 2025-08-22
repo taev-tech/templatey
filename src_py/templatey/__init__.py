@@ -1,3 +1,6 @@
+from docnote import DocnoteConfig
+from docnote import MarkupLang
+
 import templatey.prebaked as prebaked  # noqa: PLR0402
 from templatey._forwardrefs import anchor_closure_scope
 from templatey._types import Content
@@ -25,3 +28,6 @@ __all__ = [
     'prebaked',
     'template',
 ]
+
+
+DOCNOTE_CONFIG = DocnoteConfig(markup_lang=MarkupLang.CLEANCOPY)

@@ -27,7 +27,7 @@ from typing import Protocol
 from typing import dataclass_transform
 from typing import overload
 
-from docnote import ClcNote
+from docnote import Note
 
 from templatey._forwardrefs import ForwardRefGeneratingNamespaceLookup
 from templatey._forwardrefs import ForwardRefLookupKey
@@ -47,6 +47,10 @@ from templatey.parser import TemplateInstanceDataRef
 from templatey.parser import TemplateInstanceVariableRef
 
 logger = logging.getLogger(__name__)
+
+if typing.TYPE_CHECKING:
+    from templatey.environments import AsyncTemplateLoader
+    from templatey.environments import SyncTemplateLoader
 
 
 class VariableEscaper(Protocol):
@@ -84,7 +88,7 @@ class InterpolationPrerenderer(Protocol):
             self,
             value: Annotated[
                 object | None,
-                ClcNote(
+                Note(
                     '''The value of the variable or content. A value of
                     ``None`` indicates that the value is intended to be
                     omitted, but you may still provide a fallback
@@ -224,17 +228,25 @@ def template[T: type](  # noqa: PLR0913
         kw_only: bool = False,
         slots: bool = True,
         weakref_slot: bool = False,
+        loader: Annotated[
+                AsyncTemplateLoader | SyncTemplateLoader | None,
+                Note('''Explicit template loaders can be passed to a template
+                    instance to bypass the loader declared in the template
+                    environment. This is primarily intended as a mechanism for
+                    library developers to define redistributable templates as
+                    part of their codebases, while not depending on the
+                    template loader of the end user's codebase.''')
+            ] = None,
         segment_modifiers: Annotated[
                 Sequence[SegmentModifier] | None,
-                ClcNote('''An ordered sequence of ``SegmentModifier`` instances
+                Note('''An ordered sequence of ``SegmentModifier`` instances
                     to apply to every literal string segment of the loaded
                     template text.
 
                     The modifiers will be applied in the order that they are
                     declared. The first modifier to match the segment will
                     short-circuit the remaining modifiers, regardless of
-                    whether or not it applies any changes.
-                    ''')
+                    whether or not it applies any changes.''')
             ] = None
         ) -> Callable[[T], T]:
     """This both transforms the decorated class into a stdlib dataclass
@@ -266,34 +278,29 @@ def template[T: type](  # noqa: PLR0913
         },
         template_resource_locator=template_resource_locator,
         template_config=config,
-        segment_modifiers=segment_modifiers)
+        segment_modifiers=segment_modifiers,
+        explicit_loader=loader)
 
 
 @dataclass(frozen=True)
 class TemplateConfig[T: type, L: object]:
     interpolator: Annotated[
         NamedInterpolator,
-        ClcNote(
-            '''The interpolator determines what characters are used for
+        Note('''The interpolator determines what characters are used for
             performing interpolations within the template. They can be
             escaped by repeating them, for example ``{{}}`` would be
-            a literal ``{}`` with a curly braces interpolator.
-            ''')]
+            a literal ``{}`` with a curly braces interpolator.''')]
     variable_escaper: Annotated[
         VariableEscaper,
-        ClcNote(
-            '''Variables are always escaped. The variable escaper is
+        Note('''Variables are always escaped. The variable escaper is
             the callable responsible for performing that escaping. If you
             don't need escaping, there are noop escapers within the prebaked
-            template configs that you can use for convenience.
-            ''')]
+            template configs that you can use for convenience.''')]
     content_verifier: Annotated[
         ContentVerifier,
-        ClcNote(
-            '''Content isn't escaped, but it ^^is^^ verified. Content
+        Note('''Content isn't escaped, but it ^^is^^ verified. Content
             verification is a simple process that either succeeds or fails;
-            it allows, for example, to allowlist certain HTML tags.
-            ''')]
+            it allows, for example, to allowlist certain HTML tags.''')]
 
 
 def _extract_template_class_locals() -> dict[str, Any] | None:
@@ -408,7 +415,8 @@ def make_template_definition[T: type](
         # Note: needs to be understandable by template loader
         template_resource_locator: object,
         template_config: TemplateConfig,
-        segment_modifiers: Sequence[SegmentModifier]
+        segment_modifiers: Sequence[SegmentModifier],
+        explicit_loader: AsyncTemplateLoader | SyncTemplateLoader | None
         ) -> T:
     """Programmatically creates a template definition. Converts the
     requested class into a dataclass, passing along ``dataclass_kwargs``
@@ -418,6 +426,7 @@ def make_template_definition[T: type](
     cls = dataclass(**dataclass_kwargs)(cls)
     cls._templatey_config = template_config
     cls._templatey_resource_locator = template_resource_locator
+    cls._templatey_explicit_loader = explicit_loader
 
     template_module = cls.__module__
     template_scope_id = extract_frame_scope_id()
@@ -613,14 +622,14 @@ class _ComplexContentBase(Protocol):
             self,
             dependencies: Annotated[
                 Mapping[str, object],
-                ClcNote(
+                Note(
                     '''The values of the variables declared as dependencies
                     in the constructor are passed to the call to ``flatten``
                     during rendering.
                     ''')],
             config: Annotated[
                 InterpolationConfig,
-                ClcNote(
+                Note(
                     '''The interpolation configuration of the content
                     interpolation that the complex content is a member
                     of. Note that neither prefix nor suffix can be passed
@@ -629,7 +638,7 @@ class _ComplexContentBase(Protocol):
                     ''')],
             prerenderers: Annotated[
                 Mapping[str, InterpolationPrerenderer | None],
-                ClcNote(
+                Note(
                     '''If a prerenderer is defined on a dependency variable,
                     it will be included here; otherwise, the value will be
                     set to ``None``.
@@ -713,7 +722,7 @@ class ComplexContent(_ComplexContentBase):
 
     dependencies: Annotated[
         Collection[str],
-        ClcNote(
+        Note(
             '''Complex content dependencies are the **variable** names
             that a piece of complex content depends on. These will be
             passed to the implemented ``flatten`` function during
@@ -791,7 +800,7 @@ class SegmentModifier:
 class SegmentModifierMatch:
     captures: Annotated[
         list[str],
-        ClcNote(
+        Note(
             '''The captures in a segment modifier match correspond to
             the capture groups in the ``SegmentModifier`` pattern that
             resulted in the match. If the pattern had zero match groups,

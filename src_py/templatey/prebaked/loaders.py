@@ -15,6 +15,28 @@ from templatey.environments import AsyncTemplateLoader
 from templatey.environments import SyncTemplateLoader
 
 
+class InlineStringTemplateLoader(
+        AsyncTemplateLoader[str], SyncTemplateLoader[str]):
+    """This loader -- primarily intended for library use -- uses the
+    resource locator as an explicit inline string version of the
+    template.
+    """
+
+    def load_sync(
+            self,
+            template: type[TemplateParamsInstance],
+            template_resource_locator: str
+            ) -> str:
+        return template_resource_locator
+
+    async def load_async(
+            self,
+            template: type[TemplateParamsInstance],
+            template_resource_locator: str
+            ) -> str:
+        return template_resource_locator
+
+
 class DictTemplateLoader[L: object](
         AsyncTemplateLoader[L], SyncTemplateLoader[L]):
     """A barebones template loader that simply loads templates from a

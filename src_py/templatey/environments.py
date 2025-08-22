@@ -169,9 +169,20 @@ class RenderEnvironment:
 
         If force_reload is True, bypasses the cache.
         """
-        if not self._can_load_async:
-            raise TypeError(
-                'Current template loader does not support async loading')
+        template_class = cast(type[TemplateIntersectable], template)
+        explicit_loader = template_class._templatey_explicit_loader
+        if explicit_loader is None:
+            if not self._can_load_async:
+                raise TypeError(
+                    'Current template loader does not support async loading')
+
+            template_loader = cast(AsyncTemplateLoader, self._template_loader)
+        else:
+            if not isinstance(explicit_loader, AsyncTemplateLoader):
+                raise TypeError(
+                    'Explicit template loader does not support async loading')
+
+            template_loader = explicit_loader
 
         if template is EmptyTemplate:
             return PARSED_EMPTY_TEMPLATE
@@ -182,8 +193,6 @@ class RenderEnvironment:
         ):
             return self._parsed_template_cache[template]
 
-        template_loader = cast(AsyncTemplateLoader, self._template_loader)
-        template_class = cast(type[TemplateIntersectable], template)
         template_text = await template_loader.load_async(
             template,
             template_class._templatey_resource_locator)
@@ -205,9 +214,22 @@ class RenderEnvironment:
 
         If force_reload is True, bypasses the cache.
         """
-        if not self._can_load_sync:
-            raise TypeError(
-                'Current template loader does not support sync loading')
+        template_class = cast(type[TemplateIntersectable], template)
+        explicit_loader = template_class._templatey_explicit_loader
+        if explicit_loader is None:
+            if not self._can_load_sync:
+                raise TypeError(
+                    'Current template loader does not support sync loading')
+
+            # The cast here is because it could be a sync and/or async loader,
+            # and the type system doesn't know we just verified that via
+            # _can_load_sync.
+            template_loader = cast(SyncTemplateLoader, self._template_loader)
+        else:
+            if not isinstance(explicit_loader, SyncTemplateLoader):
+                raise TypeError(
+                    'Explicit template loader does not support sync loading')
+            template_loader = explicit_loader
 
         if template is EmptyTemplate:
             return PARSED_EMPTY_TEMPLATE
@@ -223,11 +245,6 @@ class RenderEnvironment:
         ):
             return self._parsed_template_cache[template]
 
-        # The cast here is because it could be a sync and/or async loader,
-        # and the type system doesn't know we just verified that via
-        # _can_load_sync.
-        template_loader = cast(SyncTemplateLoader, self._template_loader)
-        template_class = cast(type[TemplateIntersectable], template)
         template_text = template_loader.load_sync(
             template,
             template_class._templatey_resource_locator)

@@ -18,6 +18,8 @@ from typing_extensions import TypeIs
 if typing.TYPE_CHECKING:
     from _typeshed import DataclassInstance
 
+    from templatey.environments import AsyncTemplateLoader
+    from templatey.environments import SyncTemplateLoader
     from templatey.templates import SegmentModifier
     from templatey.templates import TemplateConfig
     from templatey.templates import TemplateSignature
@@ -198,6 +200,9 @@ class TemplateIntersectable(Protocol):
     # from the metadata value on the field.
     _templatey_prerenderers: ClassVar[NamedTuple]
     _templatey_segment_modifiers: ClassVar[tuple[SegmentModifier]]
+    # Used primarily for libraries shipping redistributable templates
+    _templatey_explicit_loader: ClassVar[
+        AsyncTemplateLoader | SyncTemplateLoader | None]
 
 
 # Note: we don't need cryptographically secure IDs here, so let's preserve
