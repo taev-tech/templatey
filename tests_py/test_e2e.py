@@ -940,3 +940,71 @@ class TestApiE2E:
 
         assert render_result == (
             '\n        whitespace injection\n        for fun and profit!')
+
+    def test_typealias_slot_backref(self):
+        """A template with a typealias (backref) slot must render
+        correctly.
+        """
+        nested = '''foo{var.value}'''
+        enclosing = '''{slot.foo1: value="1"}'''
+
+        render_env = RenderEnvironment(
+            env_functions=(),
+            template_loader=DictTemplateLoader(
+                templates={
+                    'nested': nested,
+                    'enclosing': enclosing}))
+
+        render_result = render_env.render_sync(
+            EnclosingTemplateWithBackrefAlias(
+                foo1=[NestedBackreffedTemplate(value=...)]))
+
+        assert render_result == 'foo1'
+
+    def test_typealias_slot_fordref(self):
+        """A template with a typealias (forward ref) slot must render
+        correctly.
+        """
+        nested = '''foo{var.value}'''
+        enclosing = '''{slot.foo1: value="1"}'''
+
+        render_env = RenderEnvironment(
+            env_functions=(),
+            template_loader=DictTemplateLoader(
+                templates={
+                    'nested': nested,
+                    'enclosing': enclosing}))
+
+        render_result = render_env.render_sync(
+            EnclosingTemplateWithFordrefAlias(
+                foo1=[NestedFordreffedTemplate(value=...)]))
+
+        assert render_result == 'foo1'
+
+
+# Unfortunately, type aliases only work at the module or class level -- ie
+# they need to be executed during module import -- and there's no way around
+# this. Therefore, this is how we set things up for the two type alias tests,
+# and if the implementation breaks, it'll also break test discovery.
+@template(html, 'nested')
+class NestedBackreffedTemplate:
+    value: Var[str]
+
+
+type BackreffedTemplateAlias = NestedBackreffedTemplate
+type FordreffedTemplateAlias = NestedFordreffedTemplate
+
+
+@template(html, 'enclosing')
+class EnclosingTemplateWithBackrefAlias:
+    foo1: Slot[BackreffedTemplateAlias]
+
+
+@template(html, 'enclosing')
+class EnclosingTemplateWithFordrefAlias:
+    foo1: Slot[FordreffedTemplateAlias]
+
+
+@template(html, 'nested')
+class NestedFordreffedTemplate:
+    value: Var[str]

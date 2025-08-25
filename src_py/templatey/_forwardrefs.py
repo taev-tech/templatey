@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections import defaultdict
 from collections.abc import Iterator
 from collections.abc import MutableMapping
@@ -7,8 +8,10 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from dataclasses import field
+from typing import Any
 from typing import ClassVar
 from typing import Protocol
+from typing import TypeAliasType
 from typing import cast
 
 from typing_extensions import TypeIs
@@ -95,6 +98,63 @@ def resolve_forward_references(pending_template_cls: TemplateClass):
                 lookup_key, pending_template_cls)
 
         del forward_ref_registry[lookup_key]
+
+
+_alias_fordref_sentinel = object()
+def get_alias_value(alias: TypeAliasType) -> Any:
+    """This is an extremely hacky workaround to resolve type aliases
+    that might include forward references.
+
+    The problem is that ``alias.__value__`` is evaluated lazily with
+    **no ability to modify the namespace**, AND with a static closure
+    around the namespace it was defined in. So there's no way -- not
+    even using ``eval`` -- to use the same fake-locals trick we use
+    for normal forward refs.
+
+    The proper solution here is to rewrite the underlying architecture
+    so that template signatures are evaluated at render env creation
+    time and/or during initial template load. But that's a pretty big
+    lift, so in the meantime, we use this.
+    """
+    module = inspect.getmodule(alias)
+    tmp_patched_names: set[str] = set()
+    value = _alias_fordref_sentinel
+    try:
+        while value is _alias_fordref_sentinel:
+            try:
+                value = alias.__value__
+            except NameError as exc:
+                alias_module = alias.__module__
+                missing_name = exc.name
+
+                # This is a recursion guard so that we don't get caught in
+                # an infinite while loop. This also prevents misc other
+                # problems (ie, some unrelated nameerror)
+                if missing_name in tmp_patched_names:
+                    raise exc
+
+                if alias_module is None:
+                    exc.add_note(
+                        'Forward refs on slots defined as forward-referenced '
+                        + 'type aliases (ex ``Slot[<TypeAliasType>]``) must '
+                        + 'have a non-None ``__module__`` attribute on the '
+                        + 'type alias!')
+                    raise exc
+
+                class ForwardRefProxyClass:
+                    REFERENCE_TARGET = ForwardRefLookupKey(
+                        module=alias_module,
+                        name=missing_name,
+                        scope_id=extract_frame_scope_id())
+
+                tmp_patched_names.add(missing_name)
+                module.__dict__[missing_name] = ForwardRefProxyClass
+
+    finally:
+        for tmp_patched_name in tmp_patched_names:
+            module.__dict__.pop(tmp_patched_name, None)
+
+    return value
 
 
 # Note: mutablemapping because otherwise chainmap complains. Even though they

@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
+from collections.abc import Iterator
 from dataclasses import dataclass
 from dataclasses import field
 from types import UnionType
+from typing import TypeAliasType
 from weakref import ref
 
 from templatey._forwardrefs import PENDING_FORWARD_REFS
 from templatey._forwardrefs import ForwardReferenceProxyClass
 from templatey._forwardrefs import ForwardRefLookupKey
+from templatey._forwardrefs import get_alias_value
 from templatey._forwardrefs import is_forward_reference_proxy
 from templatey._provenance import Provenance
 from templatey._slot_tree import ConcreteSlotTreeNode
@@ -30,6 +33,7 @@ type TemplateLookupByID = dict[TemplateInstanceID, TemplateParamsInstance]
 type _SlotAnnotation = (
     TemplateClass
     | UnionType
+    | TypeAliasType
     | type[ForwardReferenceProxyClass])
 
 
@@ -278,14 +282,10 @@ class TemplateSignature:
                 str,
                 TemplateClass | type[ForwardReferenceProxyClass]]] = []
         for slot_name, slot_annotation in slot_defs:
-            # Note that this still might contain a heterogeneous mix of
-            # template classes and forward refs! Hence flattening first.
-            if isinstance(slot_annotation, UnionType):
-                for slot_type in slot_annotation.__args__:
-                    flattened_defs.append((slot_name, slot_type))
-
-            else:
-                flattened_defs.append((slot_name, slot_annotation))
+            for flattened_slot_annotation in (
+                _recursively_flatten_slot_annotations(slot_annotation)
+            ):
+                flattened_defs.append((slot_name, flattened_slot_annotation))
 
         # Again, this looks redundant at first glance, but the point was to
         # normalize unions into single types, whether concrete or pending
@@ -373,3 +373,20 @@ class TemplateSignature:
             to_join.append(container.pending_root_node.stringify(depth=1))
 
         return '\n'.join(to_join)
+
+
+def _recursively_flatten_slot_annotations(
+        slot_annotation: _SlotAnnotation
+        ) -> Iterator[TemplateClass | type[ForwardReferenceProxyClass]]:
+    # Note that this still might contain a heterogeneous mix of
+    # template classes and forward refs! Hence flattening first.
+    if isinstance(slot_annotation, UnionType):
+        for union_member in slot_annotation.__args__:
+            yield from _recursively_flatten_slot_annotations(union_member)
+
+    elif isinstance(slot_annotation, TypeAliasType):
+        yield from _recursively_flatten_slot_annotations(
+            get_alias_value(slot_annotation))
+
+    else:
+        yield slot_annotation
