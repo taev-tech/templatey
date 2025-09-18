@@ -11,10 +11,11 @@ import pytest
 
 from templatey import Content
 from templatey import DynamicClassSlot
+from templatey import FieldConfig
 from templatey import Slot
 from templatey import Var
-from templatey import param
 from templatey import template
+from templatey import template_field
 from templatey.environments import RenderEnvironment
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import TemplateInstanceDataRef
@@ -596,15 +597,15 @@ class TestApiE2E:
 
         @template(html, 'test_template')
         class RendererTemplate:
-            good_content: Content[bool] = param(
+            good_content: Content[bool] = template_field(FieldConfig(
                 prerenderer=
-                    lambda value: '<p>yes</p>' if value else '<p>no</p>')
-            borderline_var: Var[bool] = param(
-                prerenderer=lambda value: '<yes>' if value else '<no>')
-            omitted_var_value: Var[str] = param(
-                prerenderer=lambda value: None)
-            illegal_content_tag: Content[str] = param(
-                prerenderer=lambda value: 'caught!')
+                    lambda value: '<p>yes</p>' if value else '<p>no</p>'))
+            borderline_var: Var[bool] = template_field(FieldConfig(
+                prerenderer=lambda value: '<yes>' if value else '<no>'))
+            omitted_var_value: Var[str] = template_field(FieldConfig(
+                prerenderer=lambda value: None))
+            illegal_content_tag: Content[str] = template_field(FieldConfig(
+                prerenderer=lambda value: 'caught!'))
 
         render_env = RenderEnvironment(
             env_functions=(),

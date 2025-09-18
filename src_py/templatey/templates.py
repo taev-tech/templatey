@@ -27,7 +27,9 @@ from typing import Protocol
 from typing import dataclass_transform
 from typing import overload
 
+from docnote import DocnoteConfig
 from docnote import Note
+from docnote import docnote
 
 from templatey._forwardrefs import ForwardRefGeneratingNamespaceLookup
 from templatey._forwardrefs import ForwardRefLookupKey
@@ -106,6 +108,121 @@ class InterpolationPrerenderer[T](Protocol):
         be completely omitted (including any prefix or suffix).
         """
         ...
+
+
+@dataclass(slots=True)
+class FieldConfig[T]:
+    prerenderer: InterpolationPrerenderer[T] | None = None
+
+
+# The following is adapted directly from typeshed. We did some formatting
+# updates, and inserted our prerenderer param.
+if sys.version_info >= (3, 14):
+    @overload
+    def template_field[_T](
+            field_config: FieldConfig[_T] = ...,
+            /, *,
+            default: _T,
+            default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
+            init: bool = True,
+            repr: bool = True,
+            hash: bool | None = None,
+            compare: bool = True,
+            metadata: Mapping[Any, Any] | None = None,
+            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            doc: str | None = None,
+            ) -> _T: ...
+    @overload
+    def template_field[_T](
+            field_config: FieldConfig[_T] = ...,
+            /, *,
+            default: Literal[_MISSING_TYPE.MISSING] = ...,
+            default_factory: Callable[[], _T],
+            init: bool = True,
+            repr: bool = True,
+            hash: bool | None = None,
+            compare: bool = True,
+            metadata: Mapping[Any, Any] | None = None,
+            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            doc: str | None = None,
+            ) -> _T: ...
+    @overload
+    def template_field[_T](
+            field_config: FieldConfig[_T] = ...,
+            /, *,
+            default: Literal[_MISSING_TYPE.MISSING] = ...,
+            default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
+            init: bool = True,
+            repr: bool = True,
+            hash: bool | None = None,
+            compare: bool = True,
+            metadata: Mapping[Any, Any] | None = None,
+            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            doc: str | None = None,
+            ) -> Any: ...
+
+# This is technically only valid for >=3.10, but we require that anyways
+else:
+    @overload
+    def template_field[_T](
+            field_config: FieldConfig[_T] = ...,
+            /, *,
+            default: _T,
+            default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
+            init: bool = True,
+            repr: bool = True,
+            hash: bool | None = None,
+            compare: bool = True,
+            metadata: Mapping[Any, Any] | None = None,
+            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            ) -> _T: ...
+    @overload
+    def template_field[_T](
+            field_config: FieldConfig[_T] = ...,
+            /, *,
+            default: Literal[_MISSING_TYPE.MISSING] = ...,
+            default_factory: Callable[[], _T],
+            init: bool = True,
+            repr: bool = True,
+            hash: bool | None = None,
+            compare: bool = True,
+            metadata: Mapping[Any, Any] | None = None,
+            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            ) -> _T: ...
+    @overload
+    def template_field[_T](
+            field_config: FieldConfig[_T] = ...,
+            /, *,
+            default: Literal[_MISSING_TYPE.MISSING] = ...,
+            default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
+            init: bool = True,
+            repr: bool = True,
+            hash: bool | None = None,
+            compare: bool = True,
+            metadata: Mapping[Any, Any] | None = None,
+            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            ) -> Any: ...
+
+
+@docnote(DocnoteConfig(include_in_docs=False))
+def template_field(
+        field_config: FieldConfig | None = None,
+        /, *,
+        prerenderer: InterpolationPrerenderer | None = None,
+        metadata: Mapping[Any, Any] | None = None,
+        **field_kwargs):
+    if field_config is None:
+        field_config = FieldConfig()
+
+    if metadata is None:
+        metadata = {'templatey.field_config': field_config}
+
+    else:
+        metadata = {
+            **metadata,
+            'templatey.field_config': field_config}
+
+    return field(**field_kwargs, metadata=metadata)
 
 
 # The following is adapted directly from typeshed. We did some formatting
@@ -197,18 +314,22 @@ else:
             ) -> Any: ...
 
 
+# DEPRECATED. Use ``template_field`` instead.
+@docnote(DocnoteConfig(include_in_docs=False))
 def param(
         *,
         prerenderer: InterpolationPrerenderer | None = None,
         metadata: Mapping[Any, Any] | None = None,
         **field_kwargs):
+    field_config = FieldConfig(prerenderer=prerenderer)
+
     if metadata is None:
-        metadata = {'templatey.prerenderer': prerenderer}
+        metadata = {'templatey.field_config': field_config}
 
     else:
         metadata = {
             **metadata,
-            'templatey.prerenderer': prerenderer}
+            'templatey.field_config': field_config}
 
     return field(**field_kwargs, metadata=metadata)
 
@@ -573,8 +694,11 @@ def make_template_definition[T: type](
                 dest_lookup = data
 
             dest_lookup[template_field.name] = wrapped_type
+            # The .get() might seem redundant here, but not everything is going
+            # to be assigned via ``template_field``, so everything else will
+            # be missing it.
             prerenderers[template_field.name] = template_field.metadata.get(
-                'templatey.prerenderer')
+                'templatey.field_config', FieldConfig()).prerenderer
 
     cls._templatey_signature = TemplateSignature.new(
         template_cls=cls,
