@@ -1008,3 +1008,36 @@ class EnclosingTemplateWithFordrefAlias:
 @template(html, 'nested')
 class NestedFordreffedTemplate:
     value: Var[str]
+
+
+class TestErrorRecovery:
+
+    def test_slot_not_template_instance(self):
+        """A template instance of a non-template-class must collect the
+        errors into an error collector and not result in an infinite
+        loop.
+        """
+        @dataclass
+        class NotATemplate:
+            ...
+
+        nested = '''foo{var.value}'''
+        enclosing = '''{slot.foo1: value="1"}'''
+
+        render_env = RenderEnvironment(
+            env_functions=(),
+            template_loader=DictTemplateLoader(
+                templates={
+                    'nested': nested,
+                    'enclosing': enclosing}))
+
+        with pytest.raises(ExceptionGroup) as exc_info:
+            render_env.render_sync(
+                EnclosingTemplateWithFordrefAlias(
+                    foo1=[
+                        NestedFordreffedTemplate(value=...),
+                        NotATemplate()  # type: ignore
+                    ]))
+
+        excs = exc_info.value.exceptions
+        assert len(excs) == 1

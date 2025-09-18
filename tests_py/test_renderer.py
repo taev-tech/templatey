@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from templatey._bootstrapping import EMPTY_TEMPLATE_INSTANCE
+from templatey._error_collector import ErrorCollector
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import InterpolatedVariable
@@ -89,7 +90,7 @@ class TestRenderDriver:
             autospec=True,
         ):
             parts_output = []
-            error_collector = []
+            error_collector = ErrorCollector()
             __ = [
                 *render_driver(FakeTemplate(), parts_output, error_collector)]
 
@@ -150,7 +151,7 @@ class TestRenderDriver:
             return_value=fake_cache_key
         ):
             parts_output = []
-            error_collector = []
+            error_collector = ErrorCollector()
             __ = [
                 *render_driver(FakeTemplate(), parts_output, error_collector)]
 
@@ -201,7 +202,7 @@ class TestRenderDriver:
             autospec=True,
         ):
             parts_output = []
-            error_collector = []
+            error_collector = ErrorCollector()
             __ = [
                 *render_driver(
                     FakeTemplate(var1='1var'),
@@ -225,7 +226,7 @@ class TestRenderContext:
         ctx = _RenderContext(
             template_preload={},
             function_precall={},
-            error_collector=[])
+            error_collector=ErrorCollector())
 
         request_count = 0
         for request in ctx.prepopulate(FakeTemplate(var1='foo')):
@@ -259,7 +260,7 @@ class TestRenderContext:
         ctx = _RenderContext(
             template_preload={},
             function_precall={},
-            error_collector=[])
+            error_collector=ErrorCollector())
         fake_interpolated_call = InterpolatedFunctionCall(
             call_args_exp=None,
             call_kwargs_exp=None,
@@ -319,7 +320,7 @@ class TestRenderContext:
         ctx = _RenderContext(
             template_preload={},
             function_precall={},
-            error_collector=[])
+            error_collector=ErrorCollector())
         fake_interpolated_call = InterpolatedFunctionCall(
             call_args_exp=['oof'],
             call_kwargs_exp={'baz': 'zab'},
