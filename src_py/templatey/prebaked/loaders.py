@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import typing
 from importlib import import_module
 from pathlib import Path
 from typing import Annotated
@@ -7,7 +8,9 @@ from typing import Annotated
 try:
     import anyio
 except ImportError:
-    anyio = None
+    if typing.TYPE_CHECKING:
+        import anyio
+
 from docnote import ClcNote
 
 from templatey._types import TemplateParamsInstance
@@ -112,23 +115,22 @@ class CompanionFileLoader(AsyncTemplateLoader[str], SyncTemplateLoader[str]):
         return (module_dir / template_resource_locator).read_text(
             encoding='utf-8')
 
-    if anyio is not None:
-        async def load_async(
-                self,
-                template: type[TemplateParamsInstance],
-                template_resource_locator: str
-                ) -> str:
-            template_module_name = template.__module__
-            template_module = import_module(template_module_name)
-            module_file = template_module.__file__
+    async def load_async(
+            self,
+            template: type[TemplateParamsInstance],
+            template_resource_locator: str
+            ) -> str:
+        template_module_name = template.__module__
+        template_module = import_module(template_module_name)
+        module_file = template_module.__file__
 
-            if module_file is None:
-                raise ValueError(
-                    'CompanionFileLoader can only load templates defined in '
-                    + 'actual modules!')
+        if module_file is None:
+            raise ValueError(
+                'CompanionFileLoader can only load templates defined in '
+                + 'actual modules!')
 
-            # Pyright isn't correctly applying the anyio is not None, hence the
-            # ignore
-            module_dir = anyio.Path(module_file).parent  # type: ignore
-            return await (module_dir / template_resource_locator).read_text(
-                encoding='utf-8')
+        # Pyright isn't correctly applying the anyio is not None, hence the
+        # ignore
+        module_dir = anyio.Path(module_file).parent
+        return await (module_dir / template_resource_locator).read_text(
+            encoding='utf-8')
