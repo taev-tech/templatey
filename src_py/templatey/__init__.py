@@ -9,24 +9,27 @@ from templatey._types import Slot
 from templatey._types import Var
 from templatey.environments import RenderEnvironment
 from templatey.templates import ComplexContent
+from templatey.templates import FieldConfig
 from templatey.templates import InjectedValue
 from templatey.templates import TemplateConfig
-from templatey.templates import param
+from templatey.templates import param  #  type: ignore  # noqa: F401
 from templatey.templates import template
+from templatey.templates import template_field
 
 __all__ = [
     'ComplexContent',
     'Content',
     'DynamicClassSlot',
+    'FieldConfig',
     'InjectedValue',
     'RenderEnvironment',
     'Slot',
     'TemplateConfig',
     'Var',
     'anchor_closure_scope',
-    'param',
     'prebaked',
     'template',
+    'template_field',
 ]
 
 
