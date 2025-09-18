@@ -19,6 +19,7 @@ except ImportError:
 
 from templatey._bootstrapping import PARSED_EMPTY_TEMPLATE
 from templatey._bootstrapping import EmptyTemplate
+from templatey._error_collector import ErrorCollector
 from templatey._types import TemplateClass
 from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
@@ -429,7 +430,7 @@ class RenderEnvironment:
             template_instance: TemplateParamsInstance
             ) -> str:
         output = []
-        error_collector = []
+        error_collector = ErrorCollector()
         for env_request in render_driver(
             template_instance, output, error_collector
         ):
@@ -470,7 +471,7 @@ class RenderEnvironment:
             template_instance: TemplateParamsInstance
             ) -> str:
         output = []
-        error_collector = []
+        error_collector = ErrorCollector()
         for env_request in render_driver(
             template_instance, output, error_collector
         ):
