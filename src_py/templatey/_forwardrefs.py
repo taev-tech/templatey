@@ -161,6 +161,8 @@ def get_alias_value(alias: TypeAliasType) -> Any:
 # aren't actually implemented, this is a quick way of getting typing to work
 @dataclass(kw_only=True, slots=True)
 class ForwardRefGeneratingNamespaceLookup(MutableMapping[str, type]):
+    """
+    """
     template_module: str
     template_scope_id: int | None
     captured_refs: set[ForwardRefLookupKey] = field(default_factory=set)

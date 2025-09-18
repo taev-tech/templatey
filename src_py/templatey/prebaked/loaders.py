@@ -34,6 +34,7 @@ class InlineStringTemplateLoader(
             template: type[TemplateParamsInstance],
             template_resource_locator: str
             ) -> str:
+        await anyio.sleep(0)
         return template_resource_locator
 
 
@@ -67,6 +68,7 @@ class DictTemplateLoader[L: object](
             template: type[TemplateParamsInstance],
             template_resource_locator: L
             ) -> str:
+        await anyio.sleep(0)
         return self.lookup[template_resource_locator]
 
 

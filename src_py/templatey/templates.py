@@ -82,12 +82,12 @@ class ContentVerifier(Protocol):
         ...
 
 
-class InterpolationPrerenderer(Protocol):
+class InterpolationPrerenderer[T](Protocol):
 
     def __call__(
             self,
             value: Annotated[
-                object | None,
+                T,
                 Note(
                     '''The value of the variable or content. A value of
                     ``None`` indicates that the value is intended to be
@@ -123,7 +123,7 @@ if sys.version_info >= (3, 14):
             metadata: Mapping[Any, Any] | None = None,
             kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
             doc: str | None = None,
-            prerenderer: InterpolationPrerenderer | None = None,
+            prerenderer: InterpolationPrerenderer[_T] | None = None,
             ) -> _T: ...
     @overload
     def param[_T](
@@ -137,7 +137,7 @@ if sys.version_info >= (3, 14):
             metadata: Mapping[Any, Any] | None = None,
             kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
             doc: str | None = None,
-            prerenderer: InterpolationPrerenderer | None = None,
+            prerenderer: InterpolationPrerenderer[_T] | None = None,
             ) -> _T: ...
     @overload
     def param[_T](
@@ -151,7 +151,7 @@ if sys.version_info >= (3, 14):
             metadata: Mapping[Any, Any] | None = None,
             kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
             doc: str | None = None,
-            prerenderer: InterpolationPrerenderer | None = None,
+            prerenderer: InterpolationPrerenderer[_T] | None = None,
             ) -> Any: ...
 
 # This is technically only valid for >=3.10, but we require that anyways
@@ -167,7 +167,7 @@ else:
             compare: bool = True,
             metadata: Mapping[Any, Any] | None = None,
             kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            prerenderer: InterpolationPrerenderer | None = None,
+            prerenderer: InterpolationPrerenderer[_T] | None = None,
             ) -> _T: ...
     @overload
     def param[_T](
@@ -180,7 +180,7 @@ else:
             compare: bool = True,
             metadata: Mapping[Any, Any] | None = None,
             kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            prerenderer: InterpolationPrerenderer | None = None,
+            prerenderer: InterpolationPrerenderer[_T] | None = None,
             ) -> _T: ...
     @overload
     def param[_T](
@@ -193,7 +193,7 @@ else:
             compare: bool = True,
             metadata: Mapping[Any, Any] | None = None,
             kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            prerenderer: InterpolationPrerenderer | None = None,
+            prerenderer: InterpolationPrerenderer[_T] | None = None,
             ) -> Any: ...
 
 
@@ -284,6 +284,9 @@ def template[T: type](  # noqa: PLR0913
 
 @dataclass(frozen=True)
 class TemplateConfig[T: type, L: object]:
+    """Template configs specify how the template and its interpolated
+    content should be processed.
+    """
     interpolator: Annotated[
         NamedInterpolator,
         Note('''The interpolator determines what characters are used for
@@ -798,6 +801,8 @@ class SegmentModifier:
 
 @dataclass(slots=True, kw_only=True)
 class SegmentModifierMatch:
+    """
+    """
     captures: Annotated[
         list[str],
         Note(

@@ -368,6 +368,8 @@ type ConcreteSlotTreeNode = SlotTreeNode[ConcreteSlotTreeNode]
 
 @dataclass(kw_only=True, slots=True)
 class PendingSlotTreeNode(SlotTreeNode['PendingSlotTreeNode']):
+    """
+    """
     # Note: the str is the slot_name that the route needs to be inserted under
     insertion_slot_names: set[str] = field(default_factory=set)
 
@@ -378,6 +380,8 @@ class PendingSlotTreeNode(SlotTreeNode['PendingSlotTreeNode']):
 
 @dataclass(kw_only=True, slots=True)
 class DynamicClassSlotTreeNode(SlotTreeNode['DynamicClassSlotTreeNode']):
+    """
+    """
     # Note: the str is the slot_name that the route needs to be inserted under
     dynamic_class_slot_names: set[str] = field(default_factory=set)
 
@@ -1087,6 +1091,8 @@ def _extend_pending_slot_tree(
 
 @dataclass(slots=True)
 class _SlotTreeTraversalFrame[ET: SlotTreeNode, IT: SlotTreeNode]:
+    """
+    """
     next_subtree_index: int
     existing_subtree: ET
     insertion_subtree: IT
@@ -1263,6 +1269,8 @@ def merge_dynamic_class_slots(
 
 @dataclass(slots=True)
 class _DynaClsExtractorFrame:
+    """
+    """
     active_instance: TemplateParamsInstance
     active_subtree: DynamicClassSlotTreeNode
     target_subtree_index: int

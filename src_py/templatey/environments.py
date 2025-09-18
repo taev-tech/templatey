@@ -53,6 +53,8 @@ EnvFunctionAsync = Callable[
 
 @dataclass(frozen=True, slots=True)
 class _TemplateFunctionContainer[F: EnvFunction | EnvFunctionAsync]:
+    """
+    """
     name: str
     function: F
     signature: inspect.Signature

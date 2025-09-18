@@ -47,6 +47,8 @@ class ProvenanceNode:
 
 @dataclass(slots=True, frozen=True)
 class Provenance:
+    """
+    """
     slotpath: tuple[ProvenanceNode, ...] = field(default=())
     _: KW_ONLY
     from_injection: Provenance | None = None
@@ -286,6 +288,8 @@ class Provenance:
 
 @dataclass(slots=True)
 class _TreeFlattenerFrame:
+    """
+    """
     active_instance: TemplateParamsInstance
     active_subtree: SlotTreeNode
     target_subtree_index: int

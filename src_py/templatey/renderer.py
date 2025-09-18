@@ -50,6 +50,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class FuncExecutionRequest:
+    """
+    """
     name: str
     args: Iterable[object]
     kwargs: Mapping[str, object]
@@ -59,6 +61,8 @@ class FuncExecutionRequest:
 
 @dataclass(frozen=True, slots=True)
 class FuncExecutionResult:
+    """
+    """
     # Note: must match signature from TemplateFunction!
     name: str
     retval: Sequence[str | TemplateParamsInstance | InjectedValue] | None
@@ -77,6 +81,8 @@ class FuncExecutionResult:
 
 @dataclass(slots=True)
 class RenderEnvRequest:
+    """
+    """
     to_load: Collection[type[TemplateParamsInstance]]
     to_execute: Collection[FuncExecutionRequest]
     error_collector: list[Exception]
@@ -364,6 +370,8 @@ class _InjectedInstanceContainer:
 
 @dataclass(slots=True)
 class _RenderStackFrame:
+    """
+    """
     instance: TemplateParamsInstance
     config: TemplateConfig
     signature: TemplateSignature
@@ -393,6 +401,8 @@ class _RenderStackFrame:
 
 @dataclass(slots=True)
 class _PrepopulationBatch:
+    """
+    """
     injection_provenance: Provenance | None
     # Note that this might be an injected template!
     local_root_instance: TemplateParamsInstance
@@ -528,6 +538,8 @@ class _PrepopulationBatch:
 
 @dataclass(slots=True)
 class _RenderContext:
+    """
+    """
     template_preload: dict[TemplateClass, ParsedTemplateResource]
     function_precall: dict[_PrecallCacheKey, FuncExecutionResult]
     error_collector: list[Exception]

@@ -151,6 +151,8 @@ class LiteralTemplateString(str):
 
 @dataclass(frozen=True, slots=True)
 class InterpolatedContent:
+    """
+    """
     part_index: int
     # TODO: this needs a way to define any variables used by the content via
     # ComplexContent! Otherwise, strict mode in template/interface validation
@@ -161,6 +163,8 @@ class InterpolatedContent:
 
 @dataclass(frozen=True, slots=True)
 class InterpolatedSlot:
+    """
+    """
     part_index: int
     name: str
     params: dict[str, object]
@@ -174,6 +178,8 @@ class InterpolatedSlot:
 
 @dataclass(frozen=True, slots=True)
 class InterpolatedVariable:
+    """
+    """
     part_index: int
     name: str
     config: InterpolationConfig
@@ -188,6 +194,8 @@ class InterpolatedVariable:
 
 @dataclass(frozen=True, slots=True)
 class InterpolatedFunctionCall:
+    """
+    """
     part_index: int
     name: str
     call_args: Sequence[object] = field(compare=False)
@@ -375,6 +383,8 @@ def _wrap_formatter_parse(
 
 @dataclass(frozen=True, slots=True)
 class InterpolationConfig:
+    """
+    """
     fmt: str | None = None
     prefix: str | None = None
     suffix: str | None = None

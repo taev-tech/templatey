@@ -37,6 +37,8 @@ class InterfaceAnnotationFlavor(Enum):
 
 @dataclass(frozen=True)
 class InterfaceAnnotation:
+    """
+    """
     flavor: InterfaceAnnotationFlavor
 
 
