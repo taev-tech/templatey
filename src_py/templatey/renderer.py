@@ -20,6 +20,7 @@ from typing import overload
 
 from templatey._bootstrapping import EMPTY_TEMPLATE_INSTANCE
 from templatey._bootstrapping import EMPTY_TEMPLATE_XABLE
+from templatey._error_collector import ErrorCollector
 from templatey._provenance import Provenance
 from templatey._provenance import ProvenanceNode
 from templatey._signature import TemplateSignature
@@ -85,7 +86,7 @@ class RenderEnvRequest:
     """
     to_load: Collection[type[TemplateParamsInstance]]
     to_execute: Collection[FuncExecutionRequest]
-    error_collector: list[Exception]
+    error_collector: ErrorCollector
 
     # These store results; we're adding them inplace instead of needing to
     # merge them later on
@@ -102,7 +103,7 @@ class RenderEnvRequest:
 def render_driver(  # noqa: C901, PLR0912, PLR0915
         template_instance: TemplateParamsInstance,
         output: list[str],
-        error_collector: list[Exception]
+        error_collector: ErrorCollector
         ) -> Iterable[RenderEnvRequest]:
     """This is a shared method for driving rendering, used by both async
     and sync renderers. It mutates the output list inplace, and yields
@@ -437,7 +438,7 @@ class _PrepopulationBatch:
             self,
             template_preload:
                 dict[TemplateClass, ParsedTemplateResource],
-            error_collector: list[Exception],
+            error_collector: ErrorCollector,
             ) -> _PrepopulationBatch | None:
         function_backlog = []
         injection_provenance = self.injection_provenance
@@ -542,7 +543,7 @@ class _RenderContext:
     """
     template_preload: dict[TemplateClass, ParsedTemplateResource]
     function_precall: dict[_PrecallCacheKey, FuncExecutionResult]
-    error_collector: list[Exception]
+    error_collector: ErrorCollector
 
     def prepopulate(
             self,
@@ -636,7 +637,7 @@ def _render_complex_content(
         template_config: TemplateConfig,
         interpolation_config: InterpolationConfig,
         prerenderers: NamedTuple,
-        error_collector: list[Exception],
+        error_collector: ErrorCollector,
         ) -> Iterable[str]:
     try:
         extracted_vars = {
@@ -684,7 +685,7 @@ def _build_render_frame_for_func_result(  # noqa: C901
         abstract_call: InterpolatedFunctionCall,
         execution_result: FuncExecutionResult,
         template_config: TemplateConfig,
-        error_collector: list[Exception]
+        error_collector: ErrorCollector
         ) -> _RenderStackFrame | None:
     """This constructs a _RenderNode for the given execution result and
     returns it (or None, if there was an error).
@@ -767,7 +768,7 @@ class _ParamLookup(Mapping[str, object]):
     rendering.
     """
     provenance: Provenance
-    error_collector: list[Exception]
+    error_collector: ErrorCollector
     placeholder_on_error: object
     lookup: Callable[[str], object]
     param_flavor: InterfaceAnnotationFlavor
@@ -777,7 +778,7 @@ class _ParamLookup(Mapping[str, object]):
             provenance: Provenance,
             template_preload: dict[TemplateClass, ParsedTemplateResource],
             param_flavor: InterfaceAnnotationFlavor,
-            error_collector: list[Exception],
+            error_collector: ErrorCollector,
             placeholder_on_error: object):
         self.error_collector = error_collector
         self.placeholder_on_error = placeholder_on_error
