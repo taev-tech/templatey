@@ -94,7 +94,7 @@ class RenderEnvRequest:
     results_executed: dict[_PrecallCacheKey, FuncExecutionResult]
 
 
-# Yes, this is a larger function than it should be.
+# Yes, this is a way, way, way larger function than it should be.
 # But function calls in python are slow, and we actually kinda care about
 # performance here.
 # TODO: look into solutions that would allow for inlining functions, so you
@@ -132,34 +132,38 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
             prerenderers=template_xable._templatey_prerenderers)]
 
     while render_stack:
+        render_frame = render_stack[-1]
+        if render_frame.exhausted:
+            render_stack.pop()
+            continue
+
+        next_part = render_frame.parts[render_frame.part_index]
+
         # Quick note on the following code: you might think these isinstance
         # calls are slow, and that you could speed things up by, say, using
         # some kind of sentinel value in a slot. This is incorrect! (At least
         # with 3.13). Isinstance is actually the fastest (and clearest) way
         # to do it.
-        try:
-            render_frame = render_stack[-1]
-            if render_frame.exhausted:
-                render_stack.pop()
-                continue
 
-            next_part = render_frame.parts[render_frame.part_index]
+        # Strings are hardest to deal with because they're also containers,
+        # so just get that out of the way first
+        if isinstance(next_part, str):
+            render_frame.part_index += 1
+            output.append(next_part)
 
-            # Strings are hardest to deal with because they're containers, so
-            # just get that out of the way first
-            if isinstance(next_part, str):
-                render_frame.part_index += 1
-                output.append(next_part)
+        elif isinstance(next_part, InterpolatedVariable):
+            render_frame.part_index += 1
+            unescaped_vars = _ParamLookup(
+                provenance=render_frame.provenance,
+                template_preload=context.template_preload,
+                param_flavor=InterfaceAnnotationFlavor.VARIABLE,
+                error_collector=error_collector,
+                placeholder_on_error='')
 
-            elif isinstance(next_part, InterpolatedVariable):
-                render_frame.part_index += 1
-                unescaped_vars = _ParamLookup(
-                    provenance=render_frame.provenance,
-                    template_preload=context.template_preload,
-                    param_flavor=InterfaceAnnotationFlavor.VARIABLE,
-                    error_collector=error_collector,
-                    placeholder_on_error='')
-
+            # Yes, it feels redundant to have a bunch of these try/excepts,
+            # but we want them to be as tight as possible on the actual code,
+            # to be defensive against infinite loops.
+            try:
                 raw_val = unescaped_vars[next_part.name]
                 prerenderer = getattr(
                     render_frame.prerenderers, next_part.name, None)
@@ -177,14 +181,22 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     # Note that variable interpolations don't support affixes!
                     output.append(escaped_val)
 
-            elif isinstance(next_part, InterpolatedContent):
-                render_frame.part_index += 1
-                unverified_content = _ParamLookup(
-                    provenance=render_frame.provenance,
-                    template_preload=context.template_preload,
-                    param_flavor=InterfaceAnnotationFlavor.CONTENT,
-                    error_collector=error_collector,
-                    placeholder_on_error='')
+            # Note: this could be eg a lookup error because of a missing
+            # variable. This isn't redundant with the error collection within
+            # prepopulation.
+            except Exception as exc:
+                error_collector.append(exc)
+
+        elif isinstance(next_part, InterpolatedContent):
+            render_frame.part_index += 1
+            unverified_content = _ParamLookup(
+                provenance=render_frame.provenance,
+                template_preload=context.template_preload,
+                param_flavor=InterfaceAnnotationFlavor.CONTENT,
+                error_collector=error_collector,
+                placeholder_on_error='')
+
+            try:
                 val_from_params = unverified_content[next_part.name]
 
                 if isinstance(val_from_params, ComplexContent):
@@ -219,46 +231,67 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                         output.extend(
                             next_part.config.apply_affix(formatted_val))
 
-            # Slots get a little bit more complicated, but the general idea is
-            # to append a stack frame for each depth level. We maintain the
-            # state of which instance we're on within the stack frame.
-            elif isinstance(next_part, InterpolatedSlot):
-                slot_instance_index = render_frame.slot_instance_index
-                if slot_instance_index == 0:
+            # Note: this could be eg a lookup error because of a missing
+            # variable. This isn't redundant with the error collection within
+            # prepopulation.
+            except Exception as exc:
+                error_collector.append(exc)
+
+        # Slots get a little bit more complicated, but the general idea is
+        # to append a stack frame for each depth level. We maintain the
+        # state of which instance we're on within the stack frame.
+        elif isinstance(next_part, InterpolatedSlot):
+            slot_instance_index = render_frame.slot_instance_index
+            if slot_instance_index == 0:
+                # Note that this needs a dedicated try/catch so that the
+                # part_index handling logic remains outside of the failure case
+                try:
                     slot_instances = getattr(
                         render_frame.instance, next_part.name)
                     slot_instance_count = len(slot_instances)
+                # Note: this would happen if the getattr fails, for example
+                # because the wrong type was passed for the slot instance.
+                except Exception as exc:
+                    error_collector.append(exc)
+                    render_frame.part_index += 1
+                    continue
 
-                    if slot_instance_count > 0:
-                        render_frame.slot_instance_count = slot_instance_count
-                        render_frame.slot_instances = slot_instances
-                    # Note that this is also important to skip prefix/suffix.
-                    else:
-                        render_frame.part_index += 1
-                        continue
-
+                if slot_instance_count > 0:
+                    render_frame.slot_instance_count = slot_instance_count
+                    render_frame.slot_instances = slot_instances
+                # Note that this is also important to skip prefix/suffix.
                 else:
-                    # Note that we skip this entirely if the slot instance
-                    # count is zero, so by definition, if we hit this branch,
-                    # we need a suffix.
+                    # Critical: this must stay outside exception handling!
+                    render_frame.part_index += 1
+                    continue
+
+            else:
+                # Note that we skip this entirely if the slot instance
+                # count is zero, so by definition, if we hit this branch,
+                # we need a suffix.
+                try:
                     output.extend(next_part.config.apply_suffix_iter())
-                    slot_instance_count = render_frame.slot_instance_count
-                    # We've exhausted the instances; reset the state for the
-                    # next slot.
-                    if render_frame.slot_instance_index >= slot_instance_count:
-                        render_frame.slot_instance_index = 0
-                        render_frame.slot_instance_count = 0
-                        # Note: we're deliberately skipping the slot instances,
-                        # because it'll just get overwritten the next time
-                        # around, so this is faster (though it doesn't free
-                        # memory as quickly)
-                        render_frame.part_index += 1
-                        continue
+                except Exception as exc:
+                    error_collector.append(exc)
 
-                    slot_instances = render_frame.slot_instances
+                slot_instance_count = render_frame.slot_instance_count
+                # We've exhausted the instances; reset the state for the
+                # next slot.
+                if render_frame.slot_instance_index >= slot_instance_count:
+                    render_frame.slot_instance_index = 0
+                    render_frame.slot_instance_count = 0
+                    # Note: we're deliberately skipping the slot instances,
+                    # because it'll just get overwritten the next time
+                    # around, so this is faster (though it doesn't free
+                    # memory as quickly)
+                    render_frame.part_index += 1
+                    continue
 
-                # Remember: we skip this entirely if the slot instance count
-                # is zero.
+                slot_instances = render_frame.slot_instances
+
+            # Remember: we skip this entirely if the slot instance count
+            # is zero.
+            try:
                 output.extend(next_part.config.apply_prefix_iter())
                 slot_instance = slot_instances[slot_instance_index]
                 # Note that this needs to support both union slot
@@ -285,10 +318,19 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                         prerenderers=
                             slot_instance_xable._templatey_prerenderers))
 
-                render_frame.slot_instance_index += 1
+            # This catches prefix issues, missing prerenders, etc.
+            except Exception as exc:
+                error_collector.append(exc)
 
-            elif isinstance(next_part, InterpolatedFunctionCall):
-                render_frame.part_index += 1
+            # It's critical that this is outside the exception catching, so
+            # that the current frame doesn't get stuck in an infinite loop on
+            # this slot instance.
+            render_frame.slot_instance_index += 1
+
+        elif isinstance(next_part, InterpolatedFunctionCall):
+            render_frame.part_index += 1
+
+            try:
                 execution_result = context.function_precall[
                     _get_precall_cache_key(render_frame.provenance, next_part)]
                 nested_render_node = _build_render_frame_for_func_result(
@@ -300,18 +342,23 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     error_collector)
                 if nested_render_node is not None:
                     render_stack.append(nested_render_node)
+            # This primarily targets missing values in the precall, but it
+            # might also capture internal templatey errors
+            except Exception as exc:
+                error_collector.append(exc)
 
-            # Similar to slots, but different enough that it warrants a
-            # separate approach. Trust me, I tried to unify them, and 1. I
-            # never got it fully working, 2. it was a pretty big hack (a
-            # virtual slot mechanism with some __getattr__ shenanigans), and
-            # 3. it created way more problems than it was worth.
-            # More info in the docstring for _InjectedInstanceContainer.
-            elif isinstance(next_part, _InjectedInstanceContainer):
-                render_frame.part_index += 1
-                injected_instance = next_part.instance
+        # Similar to slots, but different enough that it warrants a
+        # separate approach. Trust me, I tried to unify them, and 1. I
+        # never got it fully working, 2. it was a pretty big hack (a
+        # virtual slot mechanism with some __getattr__ shenanigans), and
+        # 3. it created way more problems than it was worth.
+        # More info in the docstring for _InjectedInstanceContainer.
+        elif isinstance(next_part, _InjectedInstanceContainer):
+            render_frame.part_index += 1
+            injected_instance = next_part.instance
+            try:
                 # Note that this needs to support both union slot
-                # types, and (eventually) dynamic slot types, hence
+                # types, and dynamic slot types, hence
                 # doing this on every iteration instead of
                 # precalculating it for the whole interpolated slot
                 injected_instance_preload = context.template_preload[
@@ -336,15 +383,15 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                         prerenderers=
                             injected_instance_xable._templatey_prerenderers))
 
-            else:
-                raise TypeError(
-                    'Templatey internal error: unknown template part!',
-                    next_part)
+            # This is primarily catching missing preloads, though there might
+            # be some internal errors in there too
+            except Exception as exc:
+                error_collector.append(exc)
 
-        # Note: this could be eg a lookup error because of a missing variable.
-        # This isn't redundant with the error collection within prepopulation.
-        except Exception as exc:
-            error_collector.append(exc)
+        else:
+            raise TypeError(
+                'Templatey internal error: unknown template part!',
+                next_part)
 
 
 @dataclass(slots=True)
