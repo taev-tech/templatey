@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import operator
+from collections import defaultdict
 from collections.abc import Iterable
 from collections.abc import Sequence
 from copy import copy
@@ -12,12 +13,19 @@ from dataclasses import fields
 from typing import Self
 from typing import cast
 from typing import overload
+from weakref import ref
 
+from templatey._fields import ensure_normalized_fieldset
+from templatey._fields import recursively_flatten_slot_annotations
 from templatey._forwardrefs import ForwardRefLookupKey
+from templatey._types import DYNAMIC_TEMPLATE_CLASS
+from templatey._types import DynamicTemplateClass
 from templatey._types import TemplateClass
 from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
 from templatey._types import create_templatey_id
+
+type SlotPath = tuple[str, TemplateClass | DynamicTemplateClass]
 
 
 # Note: the ordering here is to emphasize the fact that the slot
@@ -56,7 +64,7 @@ class SlotTreeRoute[T: SlotTreeNode](tuple[str, TemplateClass, T]):
         return self[2]
 
     @property
-    def slot_path(self) -> tuple[str, TemplateClass]:
+    def slot_path(self) -> SlotPath:
         return self[0:2]
 
 
@@ -100,8 +108,7 @@ class SlotTreeNode[T: SlotTreeNode](list[SlotTreeRoute[T]]):
 
     # We use this to make the logic cleaner when merging trees, but we want
     # the faster performance of the tuple when actually traversing the tree
-    _index_by_slot_path: dict[tuple[str, TemplateClass], int] = field(
-            init=False, repr=False)
+    _index_by_slot_path: dict[SlotPath, int] = field(init=False, repr=False)
 
     def __post_init__(
             self,
@@ -715,14 +722,555 @@ def merge_into_slot_tree[T: SlotTreeNode](
                 first_encounters=next_first_encounters))
 
 
+type _PendingSlotRoute = tuple[
+    str, TemplateClass | DynamicTemplateClass, _PendingSlotTreeNode]
+type _PendingNodeRegistry = dict[
+    TemplateClass | DynamicTemplateClass, list[_PendingSlotTreeNode]]
+
+
+@dataclass(slots=True, weakref_slot=True)
+class _PendingSlotTreeNode(list[_PendingSlotRoute]):
+    """Pending slot trees paint the full picture of all slots on all
+    children of a particular root template class. They are not culled,
+    and therefore not optimized for rendering. However, they avoid the
+    additional complexity of needing to look up a particular slot tree
+    for a particular target template class.
+
+    These are used as an intermediate step to building a slot tree.
+    The challenge here is that we need to avoid infinite recursion when
+    resolving mutually-recursive loops of slot dependencies. So we need
+    a way that we can short-circuit tree population any time we
+    encounter a slot with an already encountered slot class.
+
+    These frames allow for recursion detection by reducing the problem
+    to something (metaphorically) similar to this:
+    >
+    __embed__: 'code/python'
+        def recursively_add_slot_classes(
+                parent,
+                all_slots: set[TemplateClass]):
+            for slot_class in parent:
+                if slot_class in all_slots:
+                    continue
+                else:
+                    recursively_add_slot_classes(slot_class, all_slots)
+
+    Although this requires a little bit of duplicated effort when we
+    then need to build the trees for other slot classes along the
+    recursion path, it massively simplifies the code to build them.
+
+    These are not meant to be created directly; instead, use the two
+    helpers, ``make_root`` and ``make_child``.
+    """
+    # Note: these are (deliberately) redundant with the nodepath that led us
+    # here, and included purely for convenience
+    slot_name: str
+    slot_cls: TemplateClass | DynamicTemplateClass
+
+    # Note that this does NOT include the current node
+    _nodepath_parents: tuple[tuple[*SlotPath, ref[_PendingSlotTreeNode]], ...]
+
+    # These are always self-referential, so we use a weakref to avoid literally
+    # always needing complicated GC
+    first_encounters: dict[TemplateClass, ref[_PendingSlotTreeNode]]
+
+    # Both recursion fields are updated by children as they are created
+    nonrecursive_descendants: set[TemplateClass | DynamicTemplateClass] = \
+        field(default_factory=set)
+    # These are deeper nodes, so no weakref is needed (the refs still flow in
+    # the same direction)
+    # Note that the ordering of the tuple here is deliberately different
+    # than in other places, because it's also semantically different. In other
+    # places, it's the slot path FOR the next-door node; in this case, it's
+    # the slot path WITHIN the next-door node!
+    recursion_loop_sources: list[tuple[_PendingSlotTreeNode, SlotPath]] = \
+        field(default_factory=list)
+
+    id_: int = field(default_factory=create_templatey_id)
+
+    def __post_init__(self):
+        for _, _, parent_pending_node in self.nodepath_parents:
+            parent_pending_node.nonrecursive_descendants.add(self.slot_cls)
+
+    def get_all_nonrecursive_inclusions(
+            self
+            ) -> Iterable[TemplateClass | DynamicTemplateClass]:
+        """This provides a view into the slot classes that
+        INCLUDES the current class.
+        """
+        for slot_cls in self.nonrecursive_descendants:
+            yield slot_cls
+        yield self.slot_cls
+
+    def get_all_nodepath_inclusions(
+            self,
+            offset: _PendingSlotTreeNode | None = None
+            ) -> Iterable[tuple[*SlotPath, _PendingSlotTreeNode]]:
+        """Provides a view into all nodepath parents, plus the current
+        node, in order. If offset is passed, start immediately after the
+        passed node.
+        """
+        if offset is None:
+            yield from self.nodepath_parents
+        else:
+            offset_encountered = False
+            for slot_name, slot_cls, pending_node in self.nodepath_parents:
+                if offset_encountered:
+                    yield (slot_name, slot_cls, pending_node)
+
+                if pending_node is offset:
+                    offset_encountered = True
+
+            if not offset_encountered:
+                raise ValueError(
+                    'Nodepath inclusion offset not found within parents!',
+                    self, offset)
+
+        yield (self.slot_name, self.slot_cls, self)
+
+    @property
+    def nodepath_parents(
+            self
+            ) -> tuple[tuple[*SlotPath, _PendingSlotTreeNode], ...]:
+        """This dereferences the nodepath parents.
+        """
+        # Note: the cast() here is because pyright doesn't pick up on the
+        # any() we do in just a second to fix it, and the explicit typecast
+        # is because otherwise pyright assigns the type too broadly and it
+        # no longer matches the return signature
+        retval: tuple[tuple[*SlotPath, _PendingSlotTreeNode], ...] = tuple(
+            (slot_name, slot_cls, cast(_PendingSlotTreeNode, noderef()))
+            for slot_name, slot_cls, noderef in self._nodepath_parents)
+        if any(segment[2] is None for segment in retval):
+            raise RuntimeError(
+                'Impossible branch: prematurely GCd nodepath parents!',
+                self)
+
+        return retval
+
+    def check_recursion(
+            self,
+            template_cls: TemplateClass
+            ) -> _PendingSlotTreeNode | None:
+        """Checks for the passed ``template_cls`` in the history. If
+        found, returns a it (after dereferencing). If not found, returns
+        None. If the reference is no longer valid, raises.
+        """
+        if template_cls in self.first_encounters:
+            node = self.first_encounters[template_cls]()
+            if node is None:
+                raise RuntimeError(
+                    'Impossible branch: prematurely GCd pending slot tree '
+                    + 'node!', self)
+
+            return node
+
+        return None
+
+    def make_child(
+            self,
+            slot_name: str,
+            slot_cls: TemplateClass | DynamicTemplateClass
+            ) -> _PendingSlotTreeNode:
+        new_child = _PendingSlotTreeNode(
+            slot_name=slot_name,
+            slot_cls=slot_cls,
+            first_encounters={**self.first_encounters},
+            _nodepath_parents=(
+                *self._nodepath_parents, (slot_name, slot_cls, ref(self))),)
+
+        if (
+            slot_cls is not DYNAMIC_TEMPLATE_CLASS
+            and slot_cls not in new_child.first_encounters
+        ):
+            new_child.first_encounters[slot_cls] = ref(new_child)
+
+        return new_child
+
+    @classmethod
+    def make_root(
+            cls,
+            template_cls: TemplateClass,
+            ) -> _PendingSlotTreeNode:
+        new_root = cls(
+            # Hacky, but... easier than needing to always check for Nones.
+            slot_name='',
+            slot_cls=template_cls,
+            first_encounters={},
+            _nodepath_parents=(),)
+        new_root.first_encounters[template_cls] = ref(new_root)
+        return new_root
+
+    @staticmethod
+    def update_postrecursion_descendants(
+            pending_node: _PendingSlotTreeNode,
+            postrecursion_descendants:
+                dict[int, set[TemplateClass | DynamicTemplateClass]]
+            ) -> set[TemplateClass | DynamicTemplateClass]:
+        """Updates the postrecursion descendants for all children of
+        the current ``pending_node``. Returns the total descendants for
+        the current node.
+
+        This relies upon us traversing the pending tree from shallowest
+        to deepest, but it is independent of depth-first vs
+        breadth-first, since we're updating specific descendants and the
+        total descendants will never change for a particular node
+        (again, as long as we traverse from shallowest to deepest).
+        """
+        total_descendants = (
+            postrecursion_descendants[pending_node.id_]
+            | pending_node.nonrecursive_descendants)
+        for recursion_loop_src, _ in pending_node.recursion_loop_sources:
+            for (
+                _, _, descendant_node
+            ) in recursion_loop_src.get_all_nodepath_inclusions(
+                offset=pending_node
+            ):
+                postrecursion_descendants[descendant_node.id_].update(
+                    total_descendants)
+
+        return total_descendants
+
+    def convert_to_slot_tree(
+            self,
+            slot_cls: TemplateClass | DynamicTemplateClass
+            ) -> SlotTreeNode:
+        """Call this on the root of the pending tree to create a slot
+        tree for the passed ``slot_cls``. This will correctly cull all
+        non-relevant slot paths while keeping recursion loops intact.
+
+        Overview of the algorithm:
+        ++  ...for each slot tree...
+        ++  iterate over the whole pending tree, from shallowest node to
+            deepest node. this allows you to guarantee that you're finding
+            the deepest recursions first.
+        ++  keep track of the ``postrecursion_descendants`` separately.
+            these get updated during the transformation.
+            probably do this as an {id: set[]} construct, that way it's
+            really easy to update.
+        ++  every time you encounter a pending node with recursion loop
+            sources:
+            ++  for each recursion loop source
+            ++  ``get_all_nodepath_inclusions`` (probably will want to add
+                an offset parameter) FROM the recursion target UNTIL the
+                recursion source (inclusive) -- ie, all intermediate nodes
+                within the recursion loop
+            ++  add the current pending node's postrecursion descendants
+                (plus the slot class for the pending node) to that
+                intermediate node's postrecursion descendants
+        ++  every time you encounter a node, add the nonrecursive descendants
+            to the postrecursion descendants to get the total descendants
+            for that node
+        ++  if the current slot class matches the target, include, regardless
+            of how many children it has.
+        ++  for each child:
+            ++  if the target slot class isn't included in the child's
+                total descendants, cull the child (including all its children)
+        ++  if the current slot class does not match the target, AND all
+            its children were culled, cull the current pending node in its
+            entirety
+        """
+        # Note that this cannot be part of the stack frame, because it needs
+        # to be specific to particular nodes -- not an entire tree depth.
+        postrecursion_descendants: \
+            dict[int, set[TemplateClass | DynamicTemplateClass]] = \
+            defaultdict(set)
+        slotnode_by_id: dict[int, SlotTreeNode] = {}
+        visited_node_ids: set[int] = {self.id_}
+
+        # Total descendants include every template class that could possibly be
+        # encountered by any children of this node, including within any
+        # recursion loops (even those that recurse higher up the tree than the
+        # current frame).
+        root_total_descendants = self.update_postrecursion_descendants(
+            self, postrecursion_descendants)
+
+        # Separating the frame from the stack creation gets pyright to stop
+        # complaining that frame is possibly unbound
+        frame = _SlotTreeBuilderFrame(
+            pending_node=self,
+            total_descendants=root_total_descendants)
+        stack: list[_SlotTreeBuilderFrame] = [frame]
+
+        while stack:
+            frame = stack[-1]
+
+            # When we exhaust all of the children in a frame, we need to first
+            # check the node associated with the frame itself before advancing
+            if frame.exhausted:
+                # If we're at the root node, we don't need to check anything;
+                # root nodes are always included.
+                if len(stack) > 1:
+                    parent_frame = stack[-2]
+
+                    if (
+                        # First case: the slot class of the current frame
+                        # matches the slot class we're building a tree for.
+                        # Always include!
+                        frame.pending_node.slot_cls is slot_cls
+                        # Second case: the slot class doesn't match, but it has
+                        # non-culled children. Also include!
+                        or frame.child_slot_routes
+                    ):
+                        new_node = SlotTreeNode(
+                            frame.child_slot_routes,
+                            # This is partly for convenience (by keeping the
+                            # IDs the same it's easier to see what's going on)
+                            # but is also critical for resolving recursion
+                            # (see below)
+                            id_=frame.pending_node.id_,)
+                        slotnode_by_id[new_node.id_] = new_node
+
+                        parent_frame.child_slot_routes.append(
+                            # Note: this will work; we'll get to the leaf
+                            # node, which will have no children. That will
+                            # therefore be immediately exhausted, and the
+                            # node created -- with an empty subtree.
+                            # Then we'll proceed back up the tree from
+                            # there.
+                            SlotTreeRoute.new(
+                                frame.pending_node.slot_name,
+                                frame.pending_node.slot_cls,
+                                new_node))
+
+                        # Finally, we need to restore any recursion loops,
+                        # which got lost because we needed to descend to the
+                        # leafmost nodes for culling to work.
+                        for (
+                            recursion_src, recursive_slotpath
+                        ) in frame.pending_node.recursion_loop_sources:
+                            recursive_leaf = slotnode_by_id[recursion_src.id_]
+                            recursive_leaf.append(
+                                SlotTreeRoute.new(
+                                    *recursive_slotpath, new_node))
+
+                    # Implicit third case: the slot class doesn't match, AND
+                    # all of its children (if it had any) were culled. In this
+                    # case, the current frame should be culled as well.
+
+                stack.pop()
+                continue
+
+            _, _, nested_pending_node = frame.advance()
+            nested_total_descendants = self.update_postrecursion_descendants(
+                nested_pending_node, postrecursion_descendants)
+
+            # If the nested child's total descendants (ie, everything,
+            # including any recursion loops, even to shallower levels) doesn't
+            # include the target slot_cls, we can cull the entire branch (by
+            # skipping this block).
+            # Note that this doesn't automatically cull the node associated
+            # with the frame itself -- we handle that after exhausting the
+            # frame (see above).
+            if (
+                slot_cls in nested_total_descendants
+                # This prevents infinite recursion, but it also relies upon
+                # the exhaustion block to fixup the recursion in recursion
+                # sources.
+                and nested_pending_node.id_ not in visited_node_ids
+            ):
+                # Note: we can't rely upon the logic in the exhaustion block
+                # to handle this, because exhaustion works its way back out
+                # from the leaf nodes. Therefore we need something extra so
+                # that the RECURSIVE leaf nodes don't continue on back to the
+                # recursion target.
+                visited_node_ids.add(nested_pending_node.id_)
+                # NOTE: we're not adding this to the child slot routes in the
+                # current frame yet! That gets handled when the child frame
+                # is exhausted.
+                stack.append(_SlotTreeBuilderFrame(
+                    pending_node=nested_pending_node,
+                    total_descendants=nested_total_descendants))
+
+        # Okay, finally we need to fix recursion and termini. The easiest way
+        # to do this is just to merge the tree into a fresh one.
+        last_frame = frame
+        root = SlotTreeNode()
+
+        merge_into_slot_tree(
+            self.slot_cls,
+            existing_tree_slot_type=slot_cls,
+            existing_tree=root,
+            to_merge=SlotTreeNode(routes=last_frame.child_slot_routes))
+
+        return root
+
+    def extend(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def __delitem__(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def __setitem__(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def clear(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def copy(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def insert(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def pop(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def remove(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def reverse(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def __imul__(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def __iadd__(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+
+@dataclass(slots=True)
+class _SlotTreeBuilderFrame:
+    """``_SlotTreeBuilderFrame`` instances are responsible for building
+    up a slot tree from a pending tree.
+    """
+    pending_node: _PendingSlotTreeNode
+    total_descendants: set[TemplateClass | DynamicTemplateClass]
+    child_slot_routes: list[SlotTreeRoute] = field(default_factory=list)
+    child_index: int = 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.child_index >= len(self.pending_node)
+
+    def advance(self) -> _PendingSlotRoute:
+        next_route = self.pending_node[self.child_index]
+        self.child_index += 1
+        return next_route
+
+
+@dataclass(slots=True)
+class _PendingTreeBuilderFrame:
+    """``_PendingTreeBuilderFrame`` instances are used to build up a
+    pending slot tree, which is then used to construct individual slot
+    trees.
+    """
+    slot_cls: TemplateClass
+    pending_node: _PendingSlotTreeNode
+    remaining_nested_slots: list[SlotPath]
+
+    @classmethod
+    def from_slot_cls(
+            cls,
+            slot_cls: TemplateClass,
+            pending_node: _PendingSlotTreeNode,
+            ) -> _PendingTreeBuilderFrame:
+        """Constructs a new slot tree builder frame for the passed
+        template class. **Note that the pending node is for the passed
+        slot_cls!**
+        """
+        fieldset = ensure_normalized_fieldset(slot_cls)
+        nested_slots: list[SlotPath] = []
+        for normfield in fieldset.slots:
+            # Note that we still might have eg unions, aliases, etc. So we
+            # need to flatten and extract the actual concrete slot classes
+            # that were annotated, and then add each of them as a nested slot.
+            for flattened_slot_cls in (
+                recursively_flatten_slot_annotations(normfield.type_)
+            ):
+                nested_slots.append((normfield.name, flattened_slot_cls))
+
+        return cls(
+            slot_cls=slot_cls,
+            pending_node=pending_node,
+            remaining_nested_slots=nested_slots)
+
+    @property
+    def exhausted(self) -> bool:
+        return not self.remaining_nested_slots
+
+
+def build_slot_trees(
+        template_cls: TemplateClass
+        ) -> dict[TemplateClass | DynamicTemplateClass, SlotTreeNode]:
+    """
+    """
+    # First we need to build up the pending slot tree, which contains all of
+    # the nested template classes with no filtering or culling
+    root_node = _PendingSlotTreeNode.make_root(template_cls)
+    stack: list[_PendingTreeBuilderFrame] = [
+        _PendingTreeBuilderFrame.from_slot_cls(template_cls, root_node)]
+
+    while stack:
+        frame = stack[-1]
+        if frame.exhausted:
+            stack.pop()
+            continue
+
+        nested_slot_name, nested_slot_cls = frame.remaining_nested_slots.pop()
+
+        # We treat dynamic template classes like any other template class in
+        # terms of the data structures we use to store them, but we do need
+        # to short circuit any further checks on them.
+        # Note that this differs from the non-recursive case in that we don't
+        # add anything to the stack.
+        if nested_slot_cls is DYNAMIC_TEMPLATE_CLASS:
+            frame.pending_node.append((
+                nested_slot_name,
+                nested_slot_cls,
+                frame.pending_node.make_child(
+                    nested_slot_name, nested_slot_cls)))
+
+        # In the simple recursion case -- a template defines a slot of its
+        # own class -- we can immediately create a reference loop without
+        # any pomp nor circumstance.
+        elif nested_slot_cls is frame.slot_cls:
+            trivially_recursive_slot_route = (
+                nested_slot_name,
+                nested_slot_cls,
+                frame.pending_node)
+            frame.pending_node.append(trivially_recursive_slot_route)
+            # Note that we don't need to add this to the recursion sources,
+            # because trivial recursion can't influence the culling of the tree
+
+        # In the slightly more complicated recursion case -- a template defines
+        # a slot of an already-encountered class -- we just need to retrieve
+        # the previous node.
+        elif (
+            first_encounter
+                := frame.pending_node.check_recursion(nested_slot_cls)
+        ) is not None:
+            mutually_recursive_slot_route = (
+                nested_slot_name,
+                nested_slot_cls,
+                first_encounter)
+            frame.pending_node.append(mutually_recursive_slot_route)
+            first_encounter.recursion_loop_sources.append(
+                (frame.pending_node, (nested_slot_name, nested_slot_cls)))
+
+        # In the non-recursive case, we need to descend deeper into the
+        # dependency graph.
+        else:
+            next_node = frame.pending_node.make_child(
+                nested_slot_name, nested_slot_cls)
+            next_frame = _PendingTreeBuilderFrame.from_slot_cls(
+                nested_slot_cls, next_node)
+            stack.append(next_frame)
+
+    # Now, we need to distill the pending slot tree into individual slot trees,
+    # one for each of the encountered template classes
+    retval: dict[TemplateClass | DynamicTemplateClass, SlotTreeNode] = {}
+    for slot_cls in root_node.get_all_nonrecursive_inclusions():
+        retval[slot_cls] = root_node.convert_to_slot_tree(slot_cls)
+
+    return retval
+
+
 def update_encloser_with_trees_from_slot(
         enclosing_cls: TemplateClass,
         enclosing_slot_tree_lookup: dict[TemplateClass, ConcreteSlotTreeNode],
-        enclosing_pending_ref_lookup:
-            dict[ForwardRefLookupKey, PendingSlotTreeContainer],
-        enclosing_cls_ref_lookup_key: ForwardRefLookupKey,
         nested_slot_type: TemplateClass,
-        nested_slot_offset: PendingSlotTreeNode,
+        nested_slot_name: str,
         ) -> None:
     """This function updates the enclosing class' concrete and pending
     slot trees with the concrete and pending slot trees from the
@@ -734,8 +1282,7 @@ def update_encloser_with_trees_from_slot(
     """
     nested_slot_xable = cast(type[TemplateIntersectable], nested_slot_type)
     nested_lookup = nested_slot_xable._templatey_signature._slot_tree_lookup
-    nested_pending_refs = (
-        nested_slot_xable._templatey_signature._pending_ref_lookup)
+
     # First and foremost, we can't forget to add a route for the
     # actual slot itself!
     _apply_concrete_insertions(

@@ -6,8 +6,6 @@ import logging
 import re
 import sys
 import typing
-from collections import ChainMap
-from collections import namedtuple
 from collections.abc import Callable
 from collections.abc import Collection
 from collections.abc import Iterable
@@ -17,8 +15,6 @@ from dataclasses import _MISSING_TYPE
 from dataclasses import Field
 from dataclasses import dataclass
 from dataclasses import field
-from dataclasses import fields
-from textwrap import dedent
 from types import FrameType
 from typing import Annotated
 from typing import Any
@@ -31,16 +27,6 @@ from docnote import DocnoteConfig
 from docnote import Note
 from docnote import docnote
 
-from templatey._forwardrefs import ForwardRefGeneratingNamespaceLookup
-from templatey._forwardrefs import ForwardRefLookupKey
-from templatey._forwardrefs import extract_frame_scope_id
-from templatey._forwardrefs import resolve_forward_references
-from templatey._signature import TemplateSignature
-from templatey._types import Content
-from templatey._types import DynamicClassSlot
-from templatey._types import InterfaceAnnotationFlavor
-from templatey._types import Slot
-from templatey._types import Var
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolationConfig
 from templatey.parser import LiteralTemplateString
@@ -204,11 +190,9 @@ else:
             ) -> Any: ...
 
 
-@docnote(DocnoteConfig(include_in_docs=False))
 def template_field(
         field_config: FieldConfig | None = None,
         /, *,
-        prerenderer: InterpolationPrerenderer | None = None,
         metadata: Mapping[Any, Any] | None = None,
         **field_kwargs):
     if field_config is None:
@@ -334,7 +318,7 @@ def param(
     return field(**field_kwargs, metadata=metadata)
 
 
-@dataclass_transform(field_specifiers=(param, field, Field))
+@dataclass_transform(field_specifiers=(template_field, param, field, Field))
 def template[T: type](  # noqa: PLR0913
         config: TemplateConfig,
         template_resource_locator: object,
@@ -471,67 +455,7 @@ def _get_first_frame_from_other_module() -> FrameType | None:
     return upstack_frame
 
 
-# Yes, this is awkward with a bazillion return statements, but in this case,
-# clarity is better than elegance
-def _classify_interface_field_flavor(  # noqa: PLR0911
-        parent_class_type_hints: dict[str, Any],
-        template_field: Field
-        ) -> tuple[set[InterfaceAnnotationFlavor], type | None]:
-    """For a dataclass field, determines whether it was declared as a
-    var, slot, or content.
-
-    If none of the above, returns None.
-    """
-    # Note that dataclasses don't include the actual type (just a string)
-    # when in __future__ mode, so we need to get them from the parent class
-    # by calling get_type_hints() on it
-    resolved_field_type = parent_class_type_hints[template_field.name]
-    anno_origin = typing.get_origin(resolved_field_type)
-    if anno_origin is Var:
-        nested_type, = typing.get_args(resolved_field_type)
-        return {InterfaceAnnotationFlavor.VARIABLE}, nested_type
-    elif anno_origin is Slot:
-        nested_type, = typing.get_args(resolved_field_type)
-        return {InterfaceAnnotationFlavor.SLOT}, nested_type
-    elif anno_origin is Content:
-        nested_type, = typing.get_args(resolved_field_type)
-        return {InterfaceAnnotationFlavor.CONTENT}, nested_type
-    elif anno_origin is DynamicClassSlot:
-        return {
-            InterfaceAnnotationFlavor.SLOT,
-            InterfaceAnnotationFlavor.DYNAMIC
-        }, None
-
-    # This is all if there's a generic annotation with no parameter passed,
-    # ex ``foo: Var`` or ``bar: Slot`` or (presumably) ``baz: list``
-    elif anno_origin is None:
-        if resolved_field_type is Var:
-            return {InterfaceAnnotationFlavor.VARIABLE}, None
-
-        elif resolved_field_type is Content:
-            return {InterfaceAnnotationFlavor.CONTENT}, None
-
-        elif resolved_field_type is DynamicClassSlot:
-            return {
-                InterfaceAnnotationFlavor.SLOT,
-                InterfaceAnnotationFlavor.DYNAMIC
-            }, None
-
-        elif resolved_field_type is Slot:
-            raise TypeError(
-                '``Slot`` annotations require a concrete slot class as a '
-                + 'parameter!')
-
-        else:
-            return {InterfaceAnnotationFlavor.DATA}, None
-
-    # There was a non-generic parameter passed. Therefore, it can only be
-    # one thing: template data.
-    else:
-        return {InterfaceAnnotationFlavor.DATA}, None
-
-
-@dataclass_transform(field_specifiers=(param, field, Field))
+@dataclass_transform(field_specifiers=(template_field, param, field, Field))
 def make_template_definition[T: type](
         cls: T,
         *,
@@ -551,170 +475,8 @@ def make_template_definition[T: type](
     cls._templatey_config = template_config
     cls._templatey_resource_locator = template_resource_locator
     cls._templatey_explicit_loader = explicit_loader
-
-    template_module = cls.__module__
-    template_scope_id = extract_frame_scope_id()
-    template_forward_ref = ForwardRefLookupKey(
-        module=template_module,
-        name=cls.__name__,
-        scope_id=template_scope_id)
-
-    # We're prioritizing the typical case here, where the templates are defined
-    # at the module toplevel, and therefore accessible within the module
-    # globals. However, if the template is defined within a closure, we might
-    # need to walk up the stack until we find a caller that isn't within this
-    # file, and then grab its locals.
-    try:
-        template_type_hints = typing.get_type_hints(cls)
-    except NameError as exc:
-        logger.info(dedent('''\
-            Failed to resolve template type hints on first pass. This could be
-            indicative of a bug, or it might occur in normal situations if:
-            ++  you're defining the template within a closure. Here, we'll
-                attempt to infer the locals via inspect.currentframe, but not
-                all platforms support that, which can lead to failures
-            ++  the type hint is a forward reference.
-
-            In both cases, we'll wrap the request into a
-            ``ForwardRefLookupKey``, which will then hopefully be
-            resolved as soon as the forward reference is declared.
-            If it's never resolved, however, we will raise whenever
-            ``render`` is called.
-            '''),
-            exc_info=exc)
-
-        # If you're confused, keep reading the comments below.
-        forwardref_lookup = ForwardRefGeneratingNamespaceLookup(
-            template_module=template_module,
-            template_scope_id=template_scope_id)
-        # This is the same as the current implementation of get_type_hints
-        # in cpython for classes:
-        # https://github.com/python/cpython/blob/0045100ccbc3919e8990fa59bc413fe38d21b075/Lib/typing.py#L2325
-        template_globals = getattr(
-            sys.modules.get(template_module, None), '__dict__', {})
-
-        # Okay, so... this is non-intuitive, to be sure. And if you fail to
-        # do this, you'll have really perfidious bugs, because anything that
-        # was a valid reference within the temporary namespace created inside
-        # the class creation -- **including the class itself** -- will be
-        # converted to a forward reference proxy. This would of course cause
-        # problems with inter-class references, but it also means that the
-        # class itself gets treated as a forward ref instead a concrete slot,
-        # and therefore added into the pending forward refs registration. This
-        # then gets immediately fixed, except, because the registration is a
-        # set, and the iteration order of sets is non-deterministic, the
-        # exact, arbitrary order of pending ref resolution can cause a
-        # correctly-resolved forward ref for the current class being processed,
-        # to then be overwritten by a pending reference, which is then never
-        # resolved. Believe me, it's a mess.
-        # So to solve this, we need to do two things. First, add the class'
-        # __dict__ into the namespace lookups, because that solves any
-        # inter-class references. But second, we need to also add the class
-        # itself, under its __name__, because this name, though valid and
-        # accessible in the temporary class creation namespace, is nonetheless
-        # removed from the __dict__ during final class creation.
-        # But, ONE FINAL THING: chainmaps need **mutable** mappings. So we
-        # have to create a copy of the cls.__dict__ anyways.
-        resurrected_clsdef_namespace = {**cls.__dict__, cls.__name__: cls}
-
-        # Note: the whole point of this is to support forward refs, and there's
-        # a method to the madness here. We need a way of getting an actual
-        # forward ref object. Prior to 3.14 (via PEP 649), we don't have a way
-        # to specify to ``get_type_hints`` that we want to have a forward ref
-        # object, and it just raises a nameerror that we can't recover from.
-        # Our workaround is to inject an object that will lazily create proxy
-        # objects for all forward references, but we have to supply this to
-        # get_type_hints somehow, which is non-trivial:
-        # globalns needs to be strictly a dict, because it gets delegated into
-        # ``eval``, which requires one. Which means we can only use the localns
-        # to intercept missing forward references. But that, then, means that
-        # we need to recover the existing check for the actual globals, since
-        # otherwise **all** global names would be overwritten by the forward
-        # reference.
-        maybe_locals = _extract_template_class_locals()
-        if maybe_locals is None:
-            prioritized_lookups = (
-                # See note above about this
-                resurrected_clsdef_namespace,
-                template_globals,
-                # Fun fact: these aren't included in the other globals!
-                __builtins__,
-                forwardref_lookup)
-
-        else:
-            prioritized_lookups = (
-                # See note above about this
-                resurrected_clsdef_namespace,
-                maybe_locals,
-                template_globals,
-                # Fun fact: these aren't included in the other globals!
-                __builtins__,
-                forwardref_lookup)
-
-        # Because of our forward lookup, this will always succeed
-        template_type_hints = typing.get_type_hints(
-            cls, localns=ChainMap(*prioritized_lookups))
-
-    slots = {}
-    dynamic_slots = {}
-    vars_ = {}
-    content = {}
-    data = {}
-    prerenderers = {}
-    # Note that this ignores initvars, which is what we want
-    for template_field in fields(cls):
-        field_classification = _classify_interface_field_flavor(
-            template_type_hints, template_field)
-
-        # Note: it's not entirely clear to me that this restriction makes
-        # sense; I could potentially see MAYBE there being some kind of
-        # environment function that could access other attributes from the
-        # dataclass? But also, maybe those should be vars? Again, unclear.
-        if field_classification is None:
-            raise TypeError(
-                'Template parameter definitions may only contain variables, '
-                + 'slots, and content!')
-
-        else:
-            field_flavors, wrapped_type = field_classification
-
-            # A little awkward to effectively just repeat the comparison we did
-            # when classifying, but that makes testing easier and control flow
-            # clearer
-            if InterfaceAnnotationFlavor.VARIABLE in field_flavors:
-                dest_lookup = vars_
-            elif InterfaceAnnotationFlavor.SLOT in field_flavors:
-                if InterfaceAnnotationFlavor.DYNAMIC in field_flavors:
-                    dest_lookup = dynamic_slots
-                else:
-                    dest_lookup = slots
-            elif InterfaceAnnotationFlavor.CONTENT in field_flavors:
-                dest_lookup = content
-            else:
-                dest_lookup = data
-
-            dest_lookup[template_field.name] = wrapped_type
-            # The .get() might seem redundant here, but not everything is going
-            # to be assigned via ``template_field``, so everything else will
-            # be missing it.
-            prerenderers[template_field.name] = template_field.metadata.get(
-                'templatey.field_config', FieldConfig()).prerenderer
-
-    cls._templatey_signature = TemplateSignature.new(
-        template_cls=cls,
-        data=data,
-        slots=slots,
-        dynamic_class_slot_names=set(dynamic_slots),
-        vars_=vars_,
-        content=content,
-        forward_ref_lookup_key=template_forward_ref)
-    converter_cls = namedtuple('TemplateyConverters', tuple(prerenderers))
-    cls._templatey_prerenderers = converter_cls(**prerenderers)
     cls._templatey_segment_modifiers = tuple(segment_modifiers)
 
-    # Note: this needs to be the absolute last thing, because we need to fully
-    # satisfy the intersectable interface before we can call it.
-    resolve_forward_references(cls)
     return cls
 
 

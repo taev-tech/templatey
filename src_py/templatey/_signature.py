@@ -1,40 +1,72 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections import namedtuple
 from collections.abc import Iterable
 from collections.abc import Iterator
+from collections.abc import Sequence
+from dataclasses import Field
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import fields
+from textwrap import dedent
 from types import UnionType
+from typing import Any
 from typing import TypeAliasType
+from typing import cast
+from typing import get_args as get_type_args
+from typing import get_origin as get_type_origin
+from typing import get_type_hints
 from weakref import ref
 
-from templatey._forwardrefs import PENDING_FORWARD_REFS
-from templatey._forwardrefs import ForwardReferenceProxyClass
-from templatey._forwardrefs import ForwardRefLookupKey
-from templatey._forwardrefs import get_alias_value
-from templatey._forwardrefs import is_forward_reference_proxy
+from templatey._fields import SlotFieldAnnotation
+from templatey._fields import ensure_normalized_fieldset
 from templatey._provenance import Provenance
 from templatey._slot_tree import ConcreteSlotTreeNode
 from templatey._slot_tree import DynamicClassSlotTreeNode
-from templatey._slot_tree import PendingSlotTreeContainer
-from templatey._slot_tree import PendingSlotTreeNode
 from templatey._slot_tree import SlotTreeNode
 from templatey._slot_tree import SlotTreeRoute
 from templatey._slot_tree import gather_dynamic_class_slots
 from templatey._slot_tree import merge_into_slot_tree
 from templatey._slot_tree import update_encloser_with_trees_from_slot
+from templatey._types import Content
+from templatey._types import DynamicClassSlot
+from templatey._types import InterfaceAnnotationFlavor
+from templatey._types import Slot
 from templatey._types import TemplateClass
 from templatey._types import TemplateInstanceID
+from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
+from templatey._types import Var
+from templatey.templates import FieldConfig
 
 type GroupedTemplateInvocations = dict[TemplateClass, list[Provenance]]
 type TemplateLookupByID = dict[TemplateInstanceID, TemplateParamsInstance]
-type _SlotAnnotation = (
-    TemplateClass
-    | UnionType
-    | TypeAliasType
-    | type[ForwardReferenceProxyClass])
+
+
+def ensure_signature(template_cls: TemplateClass) -> TemplateSignature:
+    """This verifies that a template class has a signature calculated,
+    or -- if missing -- calculates it and sets it on the template class
+    (and all its slots, recursively).
+
+    This must be done after all forward refs have been resolved.
+    """
+    template_xable = cast(type[TemplateIntersectable], template_cls)
+    if hasattr(template_xable, '_templatey_signature'):
+        return template_xable._templatey_signature
+
+    fieldset = ensure_normalized_fieldset(template_cls)
+
+    template_xable._templatey_signature = signature = TemplateSignature.new(
+        template_cls=template_xable,
+        data_names=frozenset(field.name for field in fieldset.data),
+        slots={field.name: field.type_ for field in fieldset.slots},
+        dynamic_class_slot_names=frozenset(
+            field.name for field in fieldset.dynamic_slots),
+        var_names=frozenset(field.name for field in fieldset.vars_),
+        content_names=frozenset(field.name for field in fieldset.content))
+
+    return signature
 
 
 @dataclass(slots=True)
@@ -54,7 +86,6 @@ class TemplateSignature:
     # but unlike eg the slot tree, it's trivially easy for us to avoid GC
     # loops within the signature
     template_cls_ref: ref[TemplateClass]
-    _forward_ref_lookup_key: ForwardRefLookupKey
 
     data_names: frozenset[str]
     var_names: frozenset[str]
@@ -71,7 +102,6 @@ class TemplateSignature:
     # they include the flattened recursion of all included slots, all the way
     # down the tree
     _slot_tree_lookup: dict[TemplateClass, ConcreteSlotTreeNode]
-    _pending_ref_lookup: dict[ForwardRefLookupKey, PendingSlotTreeContainer]
 
     # I really don't like that we need to remember to recalculate this every
     # time we update the slot tree lookup, but for rendering performance
@@ -79,62 +109,24 @@ class TemplateSignature:
     included_template_classes: frozenset[TemplateClass] = field(init=False)
 
     def __post_init__(self):
-        self.refresh_included_template_classes_snapshot()
-        self.refresh_pending_forward_ref_registration()
         self._ordered_dynamic_class_slot_names = sorted(
             self.dynamic_class_slot_names)
-
-    def refresh_included_template_classes_snapshot(self):
-        """Call this when resolving forward references to apply any
-        changes made to the slot tree to the template classes snapshot
-        we use for increased render performance.
-        """
-        template_cls = self.template_cls_ref()
-        if template_cls is None:
-            raise RuntimeError(
-                'Template class was garbage collected before template '
-                + 'signature, and then signature asked to refresh included '
-                + 'classes snapshot?!')
-
-        self.included_template_classes = frozenset(
-            {template_cls, *self._slot_tree_lookup})
-
-    def refresh_pending_forward_ref_registration(self):
-        """Call this after having resolved forward references (or when
-        initially constructing the template signature) to register the
-        template class as requiring its forward refs. This is what
-        plumbs up the notification code to actually initiate resolving.
-        """
-        template_cls = self.template_cls_ref()
-        if template_cls is None:
-            raise RuntimeError(
-                'Template class was garbage collected before template '
-                + 'signature, and then signature asked to refresh pending '
-                + 'forward ref registration?!')
-
-        forward_ref_registry = PENDING_FORWARD_REFS.get()
-        for forward_ref in self._pending_ref_lookup:
-            forward_ref_registry[forward_ref].add(template_cls)
 
     @classmethod
     def new(
             cls,
             template_cls: type,
-            slots: dict[str, _SlotAnnotation],
-            dynamic_class_slot_names: set[str],
-            data: dict[str, None],
-            vars_: dict[str, type | type[ForwardReferenceProxyClass]],
-            content: dict[str, type | type[ForwardReferenceProxyClass]],
-            *,
-            forward_ref_lookup_key: ForwardRefLookupKey
+            slots: dict[str, SlotFieldAnnotation],
+            dynamic_class_slot_names: frozenset[str],
+            data_names: frozenset[str],
+            var_names: frozenset[str],
+            content_names: frozenset[str],
             ) -> TemplateSignature:
         """Create a new TemplateSignature based on the gathered slots,
         vars, and content. This does all of the convenience calculations
         needed to populate the semi-redundant fields.
         """
         slot_names = frozenset(slots)
-        var_names = frozenset(vars_)
-        content_names = frozenset(content)
 
         # Quick refresher: our goal here is to construct a lookup that gets
         # us a route to every instance of a particular template type. In other
@@ -143,11 +135,8 @@ class TemplateSignature:
         # template type.
         tree_wip: dict[TemplateClass, ConcreteSlotTreeNode]
         tree_wip = defaultdict(SlotTreeNode)
-        pending_ref_lookup: \
-            dict[ForwardRefLookupKey, PendingSlotTreeContainer] = {}
 
-        concrete_slot_defs, pending_ref_defs = cls._normalize_slot_defs(
-            slots.items())
+        concrete_slot_defs = cls._normalize_slot_defs(slots.items())
 
         # Note that order between concrete_slot_defs and pending_ref_defs
         # DOES matter here. Concrete has to come first, because we need to
@@ -172,52 +161,11 @@ class TemplateSignature:
             # Remember that we expanded the union already, so this is
             # guaranteed to be a single concrete ``slot_type``.
             else:
-                offset_tree = PendingSlotTreeNode(
-                    insertion_slot_names={slot_name})
                 update_encloser_with_trees_from_slot(
                     template_cls,
                     tree_wip,
-                    pending_ref_lookup,
-                    forward_ref_lookup_key,
                     slot_type,
-                    offset_tree,)
-
-        # Note that by "direct" we mean, immediate nested children of the
-        # current template_cls, for which we're constructing a signature,
-        # and NOT any nested children of nested concrete slots.
-        # These plain pending refs are very straightforward, since we don't
-        # know anything about them yet (by definition; they're forward refs!).
-        for (
-            direct_pending_slot_name,
-            direct_forward_ref_lookup_key
-        ) in pending_ref_defs:
-            existing_pending_tree = pending_ref_lookup.get(
-                direct_forward_ref_lookup_key)
-
-            if existing_pending_tree is None:
-                dest_insertion = PendingSlotTreeNode(
-                    insertion_slot_names={direct_pending_slot_name})
-                pending_ref_lookup[direct_forward_ref_lookup_key] = (
-                    PendingSlotTreeContainer(
-                        pending_slot_type=direct_forward_ref_lookup_key,
-                        pending_root_node=dest_insertion))
-                # Note that we need to include any recursion loops that end
-                # up back at the template class, since they would ALSO have
-                # the same insertion points. Helpfully, we can just merge in
-                # any existing tree for that.
-                existing_recursive_self_tree = tree_wip.get(
-                    template_cls,
-                    SlotTreeNode())
-                merge_into_slot_tree(
-                    template_cls,
-                    None,
-                    dest_insertion,
-                    existing_recursive_self_tree)
-
-            else:
-                (existing_pending_tree
-                    .pending_root_node
-                    .insertion_slot_names.add(direct_pending_slot_name))
+                    slot_name,)
 
         # Okay, so here's the deal. Every time we add a slot,
         # might create a recursive reference loop (if it had a forward ref to
@@ -239,27 +187,23 @@ class TemplateSignature:
         # Oh thank god.
         tree_wip.default_factory = None
         return cls(
-            _forward_ref_lookup_key=forward_ref_lookup_key,
             template_cls_ref=ref(template_cls),
             slot_names=slot_names,
-            dynamic_class_slot_names=frozenset(dynamic_class_slot_names),
+            dynamic_class_slot_names=dynamic_class_slot_names,
             _dynamic_class_slot_tree=gather_dynamic_class_slots(
                 template_cls,
-                dynamic_class_slot_names,
+                set(dynamic_class_slot_names),
                 tree_wip),
-            data_names=frozenset(data),
+            data_names=data_names,
             var_names=var_names,
             content_names=content_names,
-            _slot_tree_lookup=tree_wip,
-            _pending_ref_lookup=pending_ref_lookup)
+            _slot_tree_lookup=tree_wip)
 
     @classmethod
     def _normalize_slot_defs(
             cls,
-            slot_defs: Iterable[tuple[str, _SlotAnnotation]]
-            ) -> tuple[
-                list[tuple[str, TemplateClass]],
-                list[tuple[str, ForwardRefLookupKey]]]:
+            slot_defs: Iterable[tuple[str, SlotFieldAnnotation]]
+            ) -> list[tuple[str, TemplateClass]]:
         """The annotations we get "straight off the tap" (so to speak)
         of the template class can be:
         ++  unions
@@ -275,118 +219,23 @@ class TemplateSignature:
         pending nodes, returning them separately.
         """
         concrete_slots = []
-        pending_refs = []
 
-        flattened_defs: \
-            list[tuple[
-                str,
-                TemplateClass | type[ForwardReferenceProxyClass]]] = []
         for slot_name, slot_annotation in slot_defs:
             for flattened_slot_annotation in (
                 _recursively_flatten_slot_annotations(slot_annotation)
             ):
-                flattened_defs.append((slot_name, flattened_slot_annotation))
-
-        # Again, this looks redundant at first glance, but the point was to
-        # normalize unions into single types, whether concrete or pending
-        for slot_name, flattened_slot_annotation in flattened_defs:
-            if is_forward_reference_proxy(flattened_slot_annotation):
-                forward_ref = flattened_slot_annotation.REFERENCE_TARGET
-                pending_refs.append((slot_name, forward_ref))
-
-            else:
                 concrete_slots.append((slot_name, flattened_slot_annotation))
 
-        return concrete_slots, pending_refs
-
-    def resolve_forward_ref(
-            self,
-            lookup_key: ForwardRefLookupKey,
-            resolved_template_cls: TemplateClass
-            ) -> None:
-        """Notifies a dependent class (one that declared a slot as a
-        forward reference) that the reference is now available, thereby
-        causing it to resolve the forward ref and remove it from its
-        pending trees.
-        """
-        enclosing_template_cls = self.template_cls_ref()
-        if enclosing_template_cls is None:
-            raise RuntimeError(
-                'Template class was garbage collected before template '
-                + 'signature, and then signature asked to resolve forward '
-                + 'ref?!')
-
-        update_encloser_with_trees_from_slot(
-            enclosing_template_cls,
-            self._slot_tree_lookup,
-            self._pending_ref_lookup,
-            self._forward_ref_lookup_key,
-            resolved_template_cls,
-            self._pending_ref_lookup.pop(lookup_key).pending_root_node,)
-
-        self.refresh_included_template_classes_snapshot()
-        self.refresh_pending_forward_ref_registration()
-
-        # Okay, so here's the deal. Every time we resolve a forward ref, we
-        # might create a recursive reference loop. So far so good. The problem
-        # is, this means that existing slot trees will be incomplete.
-        # therefore, at the end of the process, we always circle back and check
-        # for a self-referential slot tree, and if it exists, merge it into
-        # all the rest.
-        self_referential_recursive_tree = self._slot_tree_lookup.get(
-            enclosing_template_cls)
-        if self_referential_recursive_tree is not None:
-            for slot_type, slot_tree in self._slot_tree_lookup.items():
-                if slot_type is not enclosing_template_cls:
-                    merge_into_slot_tree(
-                        enclosing_template_cls,
-                        slot_type,
-                        slot_tree,
-                        self_referential_recursive_tree)
-
-        # Right, so the thing is, this might have introduced a bunch of new
-        # recursive reference loops, and those might be buried within several
-        # layers of pending trees and stuff. This isn't suuuuper performance
-        # critical, so by far the easiest thing to do is just rebuild the
-        # tree in its entirety.
-        # Note: I suppose in theory we could maybe just do the same as we're
-        # doing for the normal slot trees, and just constantly re-merge any
-        # self_referential_recursive_tree?
-        self._dynamic_class_slot_tree = gather_dynamic_class_slots(
-            enclosing_template_cls,
-            set(self.dynamic_class_slot_names),
-            self._slot_tree_lookup)
+        return concrete_slots
 
     def stringify_all(self) -> str:
         """This is a debug method that creates a prettified string
         version of the entire slot tree lookup (pending and concrete).
         """
         to_join = []
-        to_join.append('Resolved (concrete) slots:')
+        to_join.append('Slot tree slots:')
         for template_class, root_node in self._slot_tree_lookup.items():
             to_join.append(f'  {template_class}')
             to_join.append(root_node.stringify(depth=1))
 
-        to_join.append('Pending (forward reference) slots:')
-        for ref_lookup_key, container in self._pending_ref_lookup.items():
-            to_join.append(f'  {ref_lookup_key}')
-            to_join.append(container.pending_root_node.stringify(depth=1))
-
         return '\n'.join(to_join)
-
-
-def _recursively_flatten_slot_annotations(
-        slot_annotation: _SlotAnnotation
-        ) -> Iterator[TemplateClass | type[ForwardReferenceProxyClass]]:
-    # Note that this still might contain a heterogeneous mix of
-    # template classes and forward refs! Hence flattening first.
-    if isinstance(slot_annotation, UnionType):
-        for union_member in slot_annotation.__args__:
-            yield from _recursively_flatten_slot_annotations(union_member)
-
-    elif isinstance(slot_annotation, TypeAliasType):
-        yield from _recursively_flatten_slot_annotations(
-            get_alias_value(slot_annotation))
-
-    else:
-        yield slot_annotation

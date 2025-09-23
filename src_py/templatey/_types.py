@@ -9,6 +9,7 @@ from random import Random
 from types import EllipsisType
 from typing import Annotated
 from typing import ClassVar
+from typing import Literal
 from typing import NamedTuple
 from typing import Protocol
 
@@ -18,11 +19,12 @@ from typing_extensions import TypeIs
 if typing.TYPE_CHECKING:
     from _typeshed import DataclassInstance
 
+    from templatey._fields import NormalizedFieldset
+    from templatey._signature import TemplateSignature
     from templatey.environments import AsyncTemplateLoader
     from templatey.environments import SyncTemplateLoader
     from templatey.templates import SegmentModifier
     from templatey.templates import TemplateConfig
-    from templatey.templates import TemplateSignature
 else:
     DataclassInstance = object
 
@@ -40,6 +42,14 @@ class InterfaceAnnotation:
     """
     """
     flavor: InterfaceAnnotationFlavor
+
+
+class _TemplateClassSingleton(Enum):
+    DYNAMIC_TEMPLATE_CLASS = 'dynamic'
+type DynamicTemplateClass = Literal[
+    _TemplateClassSingleton.DYNAMIC_TEMPLATE_CLASS]
+DYNAMIC_TEMPLATE_CLASS: DynamicTemplateClass = \
+    _TemplateClassSingleton.DYNAMIC_TEMPLATE_CLASS
 
 
 # Technically this should be an intersection type with both the
@@ -196,6 +206,7 @@ class TemplateIntersectable(Protocol):
     # this to be a typvar, but python doesn't currently support typevars in
     # classvars
     _templatey_resource_locator: ClassVar[object]
+    _templatey_fieldset: ClassVar[NormalizedFieldset]
     _templatey_signature: ClassVar[TemplateSignature]
     # Oldschool here for performance reasons; otherwise this would be a dict.
     # Field names match the field names from the params; the value is gathered
