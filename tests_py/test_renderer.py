@@ -63,7 +63,7 @@ class TestRenderDriver:
         class FakeTemplate:
             ...
 
-        def fake_prepopulate(render_context, *args, **kwargs):
+        def fake_prep_render(render_context, *args, **kwargs):
             # Maybe slightly helpful for the test, mostly just for type hints
             assert isinstance(render_context, _RenderContext)
 
@@ -85,8 +85,8 @@ class TestRenderDriver:
 
         with patch.object(
             _RenderContext,
-            'prepopulate',
-            side_effect=fake_prepopulate,
+            'prep_render',
+            side_effect=fake_prep_render,
             autospec=True,
         ):
             parts_output = []
@@ -109,7 +109,7 @@ class TestRenderDriver:
         class FakeTemplate:
             ...
 
-        def fake_prepopulate(render_context, *args, **kwargs):
+        def fake_prep_render(render_context, *args, **kwargs):
             # Maybe slightly helpful for the test, mostly just for type hints
             assert isinstance(render_context, _RenderContext)
 
@@ -142,8 +142,8 @@ class TestRenderDriver:
 
         with patch.object(
             _RenderContext,
-            'prepopulate',
-            side_effect=fake_prepopulate,
+            'prep_render',
+            side_effect=fake_prep_render,
             autospec=True,
         ), patch(
             'templatey.renderer._get_precall_cache_key',
@@ -167,7 +167,7 @@ class TestRenderDriver:
         class FakeTemplate:
             var1: Var[str]
 
-        def fake_prepopulate(render_context, *args, **kwargs):
+        def fake_prep_render(render_context, *args, **kwargs):
             # Maybe slightly helpful for the test, mostly just for type hints
             assert isinstance(render_context, _RenderContext)
 
@@ -197,8 +197,8 @@ class TestRenderDriver:
 
         with patch.object(
             _RenderContext,
-            'prepopulate',
-            side_effect=fake_prepopulate,
+            'prep_render',
+            side_effect=fake_prep_render,
             autospec=True,
         ):
             parts_output = []
@@ -229,7 +229,7 @@ class TestRenderContext:
             error_collector=ErrorCollector())
 
         request_count = 0
-        for request in ctx.prepopulate(FakeTemplate(var1='foo')):
+        for request in ctx.prep_render(FakeTemplate(var1='foo')):
             request_count += 1
 
             assert not request.to_execute
@@ -270,7 +270,7 @@ class TestRenderContext:
             call_kwargs={})
 
         request_count = 0
-        for request in ctx.prepopulate(FakeTemplate(var1='foo')):
+        for request in ctx.prep_render(FakeTemplate(var1='foo')):
             request_count += 1
 
             if request.to_load:
@@ -309,7 +309,7 @@ class TestRenderContext:
         assert request_count == 2
 
     def test_template_with_func_with_expansion(self):
-        """Prepopulation with a function including arg/kwarg expansion
+        """prep_render with a function including arg/kwarg expansion
         must include those args and kwargs within the resulting
         call_args and call_kwargs for the execution request.
         """
@@ -331,7 +331,7 @@ class TestRenderContext:
 
         exe_req = None
         request_count = 0
-        for request in ctx.prepopulate(FakeTemplate(var1='foo')):
+        for request in ctx.prep_render(FakeTemplate(var1='foo')):
             request_count += 1
 
             if request.to_load:

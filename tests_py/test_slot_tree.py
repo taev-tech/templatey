@@ -1,6 +1,6 @@
 from typing import cast
 
-from templatey._slot_tree import DynamicClassSlotTreeNode
+from templatey._slot_tree import DynamicClassPrerenderTreeNode
 from templatey._slot_tree import extract_dynamic_class_slot_types
 from templatey._types import DynamicClassSlot
 from templatey._types import TemplateIntersectable
@@ -31,21 +31,21 @@ class TestExtractDynamicClassSlotTypes:
             var: Var[str]
 
         # We want to isolate this test from the construction of the dynamic
-        # class slot tree, so we're constructing an explicit one here, and
+        # class prerender tree, so we're constructing an explicit one here, and
         # manually updating the classes with it. This will break if we update
-        # the struture of the dynamic class slot tree, but it gives us much
+        # the struture of the dynamic class prerender tree, but it gives us much
         # better test specificity, which is the whole reason we're writing
         # this particular unit test.
-        outermost_dynacls_slot_tree = DynamicClassSlotTreeNode(
+        outermost_dynacls_prerender_tree = DynamicClassPrerenderTreeNode(
             dynamic_class_slot_names={'middle'})
-        middle_dynacls_slot_tree = DynamicClassSlotTreeNode(
+        middle_dynacls_prerender_tree = DynamicClassPrerenderTreeNode(
             dynamic_class_slot_names={'innermost'})
         outermost_xable = cast(type[TemplateIntersectable], Outermost)
         middle_xable = cast(type[TemplateIntersectable], Middle)
-        outermost_xable._templatey_signature._dynamic_class_slot_tree = (
-            outermost_dynacls_slot_tree)
-        middle_xable._templatey_signature._dynamic_class_slot_tree = (
-            middle_dynacls_slot_tree)
+        outermost_xable._templatey_signature._dynamic_class_prerender_tree = (
+            outermost_dynacls_prerender_tree)
+        middle_xable._templatey_signature._dynamic_class_prerender_tree = (
+            middle_dynacls_prerender_tree)
 
         instance_tree = Outermost(
             middle=[
@@ -53,7 +53,7 @@ class TestExtractDynamicClassSlotTypes:
                     innermost=[Innermost(var='foo')])])
 
         result = extract_dynamic_class_slot_types(
-            instance_tree, outermost_dynacls_slot_tree)
+            instance_tree, outermost_dynacls_prerender_tree)
 
         assert result == {Middle, Innermost}
 
@@ -76,16 +76,16 @@ class TestExtractDynamicClassSlotTypes:
             var: Var[str]
 
         # We want to isolate this test from the construction of the dynamic
-        # class slot tree, so we're constructing an explicit one here, and
+        # class prerender tree, so we're constructing an explicit one here, and
         # manually updating the classes with it. This will break if we update
-        # the struture of the dynamic class slot tree, but it gives us much
+        # the struture of the dynamic class prerender tree, but it gives us much
         # better test specificity, which is the whole reason we're writing
         # this particular unit test.
-        twinner_dynacls_slot_tree = DynamicClassSlotTreeNode(
+        twinner_dynacls_prerender_tree = DynamicClassPrerenderTreeNode(
             dynamic_class_slot_names={'inner'})
         twinner_xable = cast(type[TemplateIntersectable], RecursiveTwinner)
-        twinner_xable._templatey_signature._dynamic_class_slot_tree = (
-            twinner_dynacls_slot_tree)
+        twinner_xable._templatey_signature._dynamic_class_prerender_tree = (
+            twinner_dynacls_prerender_tree)
 
         instance_tree = RecursiveTwinner(
             inner=[
@@ -93,10 +93,10 @@ class TestExtractDynamicClassSlotTypes:
                     inner=[Inner1(var='foo'), Inner2(var='bar')])])
 
         result = extract_dynamic_class_slot_types(
-            instance_tree, twinner_dynacls_slot_tree)
+            instance_tree, twinner_dynacls_prerender_tree)
 
         # Note that RecursiveTwinner gets included here, but then filtered out
-        # by the prepopulation method. This is expected; it lets us skip a
+        # by the prep_render method. This is expected; it lets us skip a
         # repeated check if the current instance is already known and batch
         # them at the end using set operations.
         assert result == {RecursiveTwinner, Inner1, Inner2}
@@ -120,16 +120,16 @@ class TestExtractDynamicClassSlotTypes:
             var: Var[str]
 
         # We want to isolate this test from the construction of the dynamic
-        # class slot tree, so we're constructing an explicit one here, and
+        # class prerender tree, so we're constructing an explicit one here, and
         # manually updating the classes with it. This will break if we update
-        # the struture of the dynamic class slot tree, but it gives us much
+        # the struture of the dynamic class prerender tree, but it gives us much
         # better test specificity, which is the whole reason we're writing
         # this particular unit test.
-        recursor_dynacls_slot_tree = DynamicClassSlotTreeNode(
+        recursor_dynacls_prerender_tree = DynamicClassPrerenderTreeNode(
             dynamic_class_slot_names={'recursor'})
         recursor_xable = cast(type[TemplateIntersectable], Recursor)
-        recursor_xable._templatey_signature._dynamic_class_slot_tree = (
-            recursor_dynacls_slot_tree)
+        recursor_xable._templatey_signature._dynamic_class_prerender_tree = (
+            recursor_dynacls_prerender_tree)
 
         instance_list: list[TemplateParamsInstance] = [Bystander(var='foo')]
         instance = Recursor(recursor=instance_list)
@@ -139,7 +139,7 @@ class TestExtractDynamicClassSlotTypes:
         instance_list.append(Recursor(recursor=[instance]))
 
         result = extract_dynamic_class_slot_types(
-            instance, recursor_dynacls_slot_tree)
+            instance, recursor_dynacls_prerender_tree)
 
         # Note that the recursor here is coming strictly from INDIRECT
         # recursion; if we only had direct recursion, it would be empty.

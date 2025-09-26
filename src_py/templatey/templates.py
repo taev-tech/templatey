@@ -27,6 +27,7 @@ from docnote import DocnoteConfig
 from docnote import Note
 from docnote import docnote
 
+from templatey._signature import TemplateSignature2
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolationConfig
 from templatey.parser import LiteralTemplateString
@@ -70,7 +71,7 @@ class ContentVerifier(Protocol):
         ...
 
 
-class InterpolationPrerenderer[T](Protocol):
+class InterpolationTransformer[T](Protocol):
 
     def __call__(
             self,
@@ -83,14 +84,14 @@ class InterpolationPrerenderer[T](Protocol):
                     instead.
                     ''')]
             ) -> str | None:
-        """Interpolation prerenderers give you a chance to modify the
+        """Interpolation transformers give you a chance to modify the
         rendered result of a particular content or variable value, omit
         it entirely, or provide a fallback for missing values.
 
-        Prerenderers are applied before formatting, escaping, and
-        verification, and the result of the prerenderer is used to
+        transformers are applied before formatting, escaping, and
+        verification, and the result of the transformer is used to
         determine whether or not the value should be included in the
-        result. If your prerenderer returns ``None``, the parameter will
+        result. If your transformer returns ``None``, the parameter will
         be completely omitted (including any prefix or suffix).
         """
         ...
@@ -98,11 +99,11 @@ class InterpolationPrerenderer[T](Protocol):
 
 @dataclass(slots=True)
 class FieldConfig[T]:
-    prerenderer: InterpolationPrerenderer[T] | None = None
+    transformer: InterpolationTransformer[T] | None = None
 
 
 # The following is adapted directly from typeshed. We did some formatting
-# updates, and inserted our prerenderer param.
+# updates, and inserted our transformer param.
 if sys.version_info >= (3, 14):
     @overload
     def template_field[_T](
@@ -210,7 +211,7 @@ def template_field(
 
 
 # The following is adapted directly from typeshed. We did some formatting
-# updates, and inserted our prerenderer param.
+# updates, and inserted our transformer param.
 if sys.version_info >= (3, 14):
     @overload
     def param[_T](
@@ -224,7 +225,7 @@ if sys.version_info >= (3, 14):
             metadata: Mapping[Any, Any] | None = None,
             kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
             doc: str | None = None,
-            prerenderer: InterpolationPrerenderer[_T] | None = None,
+            transformer: InterpolationTransformer[_T] | None = None,
             ) -> _T: ...
     @overload
     def param[_T](
@@ -238,7 +239,7 @@ if sys.version_info >= (3, 14):
             metadata: Mapping[Any, Any] | None = None,
             kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
             doc: str | None = None,
-            prerenderer: InterpolationPrerenderer[_T] | None = None,
+            transformer: InterpolationTransformer[_T] | None = None,
             ) -> _T: ...
     @overload
     def param[_T](
@@ -252,7 +253,7 @@ if sys.version_info >= (3, 14):
             metadata: Mapping[Any, Any] | None = None,
             kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
             doc: str | None = None,
-            prerenderer: InterpolationPrerenderer[_T] | None = None,
+            transformer: InterpolationTransformer[_T] | None = None,
             ) -> Any: ...
 
 # This is technically only valid for >=3.10, but we require that anyways
@@ -268,7 +269,7 @@ else:
             compare: bool = True,
             metadata: Mapping[Any, Any] | None = None,
             kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            prerenderer: InterpolationPrerenderer[_T] | None = None,
+            transformer: InterpolationTransformer[_T] | None = None,
             ) -> _T: ...
     @overload
     def param[_T](
@@ -281,7 +282,7 @@ else:
             compare: bool = True,
             metadata: Mapping[Any, Any] | None = None,
             kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            prerenderer: InterpolationPrerenderer[_T] | None = None,
+            transformer: InterpolationTransformer[_T] | None = None,
             ) -> _T: ...
     @overload
     def param[_T](
@@ -294,7 +295,7 @@ else:
             compare: bool = True,
             metadata: Mapping[Any, Any] | None = None,
             kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            prerenderer: InterpolationPrerenderer[_T] | None = None,
+            transformer: InterpolationTransformer[_T] | None = None,
             ) -> Any: ...
 
 
@@ -302,10 +303,10 @@ else:
 @docnote(DocnoteConfig(include_in_docs=False))
 def param(
         *,
-        prerenderer: InterpolationPrerenderer | None = None,
+        transformer: InterpolationTransformer | None = None,
         metadata: Mapping[Any, Any] | None = None,
         **field_kwargs):
-    field_config = FieldConfig(prerenderer=prerenderer)
+    field_config = FieldConfig(transformer=transformer)
 
     if metadata is None:
         metadata = {'templatey.field_config': field_config}
@@ -472,11 +473,11 @@ def make_template_definition[T: type](
     bookkeeping. Returns the resulting dataclass.
     """
     cls = dataclass(**dataclass_kwargs)(cls)
-    cls._templatey_config = template_config
-    cls._templatey_resource_locator = template_resource_locator
-    cls._templatey_explicit_loader = explicit_loader
-    cls._templatey_segment_modifiers = tuple(segment_modifiers)
-
+    cls._templatey_signature = TemplateSignature2(
+        config=template_config,
+        resource_locator=template_resource_locator,
+        explicit_loader=explicit_loader,
+        segment_modifiers=tuple(segment_modifiers))
     return cls
 
 
@@ -525,10 +526,10 @@ class _ComplexContentBase(Protocol):
                     on to an ``InjectedValue``; they must be manually included
                     in the return value if desired.
                     ''')],
-            prerenderers: Annotated[
-                Mapping[str, InterpolationPrerenderer | None],
+            transformers: Annotated[
+                Mapping[str, InterpolationTransformer | None],
                 Note(
-                    '''If a prerenderer is defined on a dependency variable,
+                    '''If a transformer is defined on a dependency variable,
                     it will be included here; otherwise, the value will be
                     set to ``None``.
                     ''')],
@@ -548,7 +549,7 @@ class _ComplexContentBase(Protocol):
         completely (unless you do something with it in ``flatten``).
 
         **Also note that you are responsible for calling the dependency
-        variable's ``InterpolationPrerenderer``. directly,** within your
+        variable's ``InterpolationTransformer``. directly,** within your
         implementation of ``flatten``. This affords you the option to
         skip it if desired.
 
@@ -560,8 +561,8 @@ class _ComplexContentBase(Protocol):
                         self,
                         dependencies: Mapping[str, object],
                         config: InterpolationConfig,
-                        prerenderers:
-                            Mapping[str, InterpolationPrerenderer | None],
+                        transformers:
+                            Mapping[str, InterpolationTransformer | None],
                         ) -> Iterable[str | InjectedValue]:
                     \"""Pluralizes the name of the provided dependency.
                     For example, ``{'widget': 1}`` will be rendered as

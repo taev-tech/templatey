@@ -598,14 +598,14 @@ class TestApiE2E:
         @template(html, 'test_template')
         class RendererTemplate:
             good_content: Content[bool] = template_field(FieldConfig(
-                prerenderer=
+                transformer=
                     lambda value: '<p>yes</p>' if value else '<p>no</p>'))
             borderline_var: Var[bool] = template_field(FieldConfig(
-                prerenderer=lambda value: '<yes>' if value else '<no>'))
+                transformer=lambda value: '<yes>' if value else '<no>'))
             omitted_var_value: Var[str] = template_field(FieldConfig(
-                prerenderer=lambda value: None))
+                transformer=lambda value: None))
             illegal_content_tag: Content[str] = template_field(FieldConfig(
-                prerenderer=lambda value: 'caught!'))
+                transformer=lambda value: 'caught!'))
 
         render_env = RenderEnvironment(
             env_functions=(),

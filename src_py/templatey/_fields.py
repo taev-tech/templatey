@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import typing
 from collections import defaultdict
 from collections import namedtuple
 from collections.abc import Iterable
@@ -11,6 +12,7 @@ from dataclasses import fields
 from textwrap import dedent
 from types import UnionType
 from typing import Any
+from typing import NamedTuple
 from typing import TypeAliasType
 from typing import cast
 from typing import get_args as get_type_args
@@ -19,13 +21,14 @@ from typing import get_type_hints
 from weakref import ref
 
 from templatey._provenance import Provenance
-from templatey._slot_tree import ConcreteSlotTreeNode
-from templatey._slot_tree import DynamicClassSlotTreeNode
-from templatey._slot_tree import SlotTreeNode
-from templatey._slot_tree import SlotTreeRoute
+from templatey._slot_tree import ConcretePrerenderTreeNode
+from templatey._slot_tree import DynamicClassPrerenderTreeNode
+from templatey._slot_tree import PrerenderTreeNode
+from templatey._slot_tree import PrerenderTreeRoute
 from templatey._slot_tree import gather_dynamic_class_slots
-from templatey._slot_tree import merge_into_slot_tree
+from templatey._slot_tree import merge_into_prerender_tree
 from templatey._slot_tree import update_encloser_with_trees_from_slot
+from templatey._types import DYNAMIC_TEMPLATE_CLASS
 from templatey._types import Content
 from templatey._types import DynamicClassSlot
 from templatey._types import InterfaceAnnotationFlavor
@@ -36,6 +39,9 @@ from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
 from templatey._types import Var
 from templatey.templates import FieldConfig
+
+if typing.TYPE_CHECKING:
+    from templatey._slot_tree import SlotPath
 
 type SlotFieldAnnotation = (
     TemplateClass
@@ -54,7 +60,7 @@ class NormalizedSlotField(NormalizedField):
     type_: SlotFieldAnnotation
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True)
 class NormalizedFieldset:
     slots: tuple[NormalizedSlotField, ...]
     dynamic_slots: tuple[NormalizedField, ...]
@@ -62,97 +68,129 @@ class NormalizedFieldset:
     content: tuple[NormalizedField, ...]
     data: tuple[NormalizedField, ...]
 
+    data_names: frozenset[str] = field(init=False)
+    var_names: frozenset[str] = field(init=False)
+    content_names: frozenset[str] = field(init=False)
+    # Note that these are all ONLY the direct nesteds; these do not include
+    # anything from deeper in the slot tree.
+    slot_names: frozenset[str] = field(init=False)
+    dynamic_class_slot_names: frozenset[str] = field(init=False)
+    slotpaths: frozenset[SlotPath]
 
-def ensure_normalized_fieldset(
-        template_cls: TemplateClass
-        ) -> NormalizedFieldset:
-    template_xable = cast(type[TemplateIntersectable], template_cls)
-    if hasattr(template_xable, '_templatey_fieldset'):
-        return template_xable._templatey_fieldset
+    # Oldschool here for performance reasons; otherwise this would be a dict.
+    # Field names match the field names from the params; the value is gathered
+    # from the metadata value on the field.
+    transformers: NamedTuple
 
-    try:
-        template_type_hints = get_type_hints(template_cls)
-    except NameError as exc:
-        exc.add_note(dedent('''\
-            Failed to resolve type hints on template. This is either the
-            result of an unresolved forward ref (which should have been
-            caught by your type checker), or circular imports hidden behind
-            ``if typing.TYPE_CHECKING`` blocks. These must be resolved before
-            calculating a template signature.'''))
-        raise exc
+    def __post_init__(self):
+        self.data_names = frozenset(field.name for field in self.data)
+        self.var_names = frozenset(field.name for field in self.vars_)
+        self.content_names = frozenset(field.name for field in self.content)
+        self.slot_names = frozenset(field.name for field in self.slots)
+        self.dynamic_class_slot_names = frozenset(
+            field.name for field in self.dynamic_slots)
 
-    slots = []
-    dynamic_slots = []
-    vars_ = []
-    content = []
-    data = []
-    prerenderers = {}
-    # Note that this ignores initvars, which is what we want
-    for template_field in fields(template_cls):
-        field_classification = _classify_interface_field_flavor(
-            template_type_hints, template_field)
+    @classmethod
+    def from_template_cls(
+            cls,
+            template_cls: TemplateClass
+            ) -> NormalizedFieldset:
+        try:
+            template_type_hints = get_type_hints(template_cls)
+        except NameError as exc:
+            exc.add_note(dedent('''\
+                Failed to resolve type hints on template. This is either the
+                result of an unresolved forward ref (which should have been
+                caught by your type checker), or circular imports hidden behind
+                ``if typing.TYPE_CHECKING`` blocks. These must be resolved
+                before calculating a template signature.'''))
+            raise exc
 
-        # Note: it's not entirely clear to me that this restriction makes
-        # sense; I could potentially see MAYBE there being some kind of
-        # environment function that could access other attributes from the
-        # dataclass? But also, maybe those should be vars? Again, unclear.
-        if field_classification is None:
-            raise TypeError(
-                'Template parameter definitions may only contain variables, '
-                + 'slots, and content!')
+        slotpaths: set[SlotPath] = set()
+        slots = []
+        dynamic_slots = []
+        vars_ = []
+        content = []
+        data = []
+        transformers = {}
+        # Note that this ignores initvars, which is what we want
+        for template_field in fields(template_cls):
+            field_classification = _classify_interface_field_flavor(
+                template_type_hints, template_field)
 
-        else:
-            field_flavors, wrapped_type = field_classification
-
-            # In case it isn't obvious, the .get() here is because we don't
-            # require all fields to use the ``template_field`` specifier.
-            field_config: FieldConfig | None = template_field.metadata.get(
-                'templatey.field_config')
-            if field_config is None:
-                field_config = FieldConfig()
-
-            # Just for maintainability, we're doing this first here and then
-            # replacing it for slots; that way, we don't have a bunch of these
-            normtype: NormalizedField | NormalizedSlotField = NormalizedField(
-                name=template_field.name,
-                config=field_config)
-
-            # A little awkward to effectively just repeat the comparison we did
-            # when classifying, but that makes testing easier and control flow
-            # clearer
-            if InterfaceAnnotationFlavor.VARIABLE in field_flavors:
-                vars_.append(normtype)
-
-            elif InterfaceAnnotationFlavor.SLOT in field_flavors:
-                if InterfaceAnnotationFlavor.DYNAMIC in field_flavors:
-                    dynamic_slots.append(normtype)
-
-                else:
-                    normtype = NormalizedSlotField(
-                        name=normtype.name,
-                        config=normtype.config,
-                        type_=cast(SlotFieldAnnotation, wrapped_type))
-                    slots.append(normtype)
-
-            elif InterfaceAnnotationFlavor.CONTENT in field_flavors:
-                content.append(normtype)
+            # Note: it's not entirely clear to me that this restriction makes
+            # sense; I could potentially see MAYBE there being some kind of
+            # environment function that could access other attributes from the
+            # dataclass? But also, maybe those should be vars? Again, unclear.
+            if field_classification is None:
+                raise TypeError(
+                    '``template_field`` definitions may only contain '
+                    + 'variables, slots, and content!')
 
             else:
-                data.append(normtype)
+                field_flavors, wrapped_type = field_classification
 
-            prerenderers[template_field.name] = normtype.config.prerenderer
+                # In case it isn't obvious, the .get() here is because we don't
+                # require all fields to use the ``template_field`` specifier.
+                field_config: FieldConfig | None = template_field.metadata.get(
+                    'templatey.field_config')
+                if field_config is None:
+                    field_config = FieldConfig()
 
-    prerenderer_cls = namedtuple('TemplateyPrerenderers', tuple(prerenderers))
-    template_xable._templatey_prerenderers = prerenderer_cls(**prerenderers)
+                # Just for maintainability, we're doing this first here and
+                # then replacing it for slots; that way, we don't have a bunch
+                # of these
+                normfield: NormalizedField | NormalizedSlotField = \
+                    NormalizedField(
+                        name=template_field.name,
+                        config=field_config)
 
-    fieldset = NormalizedFieldset(
-        slots=tuple(slots),
-        dynamic_slots=tuple(dynamic_slots),
-        vars_=tuple(vars_),
-        content=tuple(content),
-        data=tuple(data))
-    template_xable._templatey_fieldset = fieldset
-    return fieldset
+                # A little awkward to effectively just repeat the comparison we
+                # did when classifying, but that makes testing easier and
+                # control flow clearer
+                if InterfaceAnnotationFlavor.VARIABLE in field_flavors:
+                    vars_.append(normfield)
+
+                elif InterfaceAnnotationFlavor.SLOT in field_flavors:
+                    if InterfaceAnnotationFlavor.DYNAMIC in field_flavors:
+                        slotpaths.add(
+                            (template_field.name, DYNAMIC_TEMPLATE_CLASS))
+                        dynamic_slots.append(normfield)
+
+                    else:
+                        slot_annotation = cast(
+                            SlotFieldAnnotation, wrapped_type)
+                        normfield = NormalizedSlotField(
+                            name=normfield.name,
+                            config=normfield.config,
+                            type_=slot_annotation)
+                        slots.append(normfield)
+                        # Just to be clear: we're flattening unions etc here.
+                        slotpaths.update(
+                            (template_field.name, normtype)
+                            for normtype in normalize_slot_annotations(
+                                slot_annotation))
+
+                elif InterfaceAnnotationFlavor.CONTENT in field_flavors:
+                    content.append(normfield)
+
+                else:
+                    data.append(normfield)
+
+                transformers[template_field.name] = \
+                    normfield.config.transformer
+
+        transformer_cls = namedtuple(
+            'Templateytransformers', tuple(transformers))
+
+        return NormalizedFieldset(
+            slots=tuple(slots),
+            dynamic_slots=tuple(dynamic_slots),
+            vars_=tuple(vars_),
+            content=tuple(content),
+            data=tuple(data),
+            transformers=transformer_cls(**transformers),
+            slotpaths=frozenset(slotpaths))
 
 
 # Yes, this is awkward with a bazillion return statements, but in this case,
@@ -215,17 +253,17 @@ def _classify_interface_field_flavor(  # noqa: PLR0911
         return {InterfaceAnnotationFlavor.DATA}, None
 
 
-def recursively_flatten_slot_annotations(
+def normalize_slot_annotations(
         slot_annotation: SlotFieldAnnotation
         ) -> Iterator[TemplateClass]:
     # Note that this still might contain a heterogeneous mix of
     # template classes and forward refs! Hence flattening first.
     if isinstance(slot_annotation, UnionType):
         for union_member in slot_annotation.__args__:
-            yield from recursively_flatten_slot_annotations(union_member)
+            yield from normalize_slot_annotations(union_member)
 
     elif isinstance(slot_annotation, TypeAliasType):
-        yield from recursively_flatten_slot_annotations(
+        yield from normalize_slot_annotations(
             slot_annotation.__value__)
 
     else:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import typing
 from collections import defaultdict
 from collections import namedtuple
 from collections.abc import Iterable
@@ -19,15 +20,17 @@ from typing import get_origin as get_type_origin
 from typing import get_type_hints
 from weakref import ref
 
+from templatey._fields import NormalizedFieldset
 from templatey._fields import SlotFieldAnnotation
 from templatey._fields import ensure_normalized_fieldset
 from templatey._provenance import Provenance
-from templatey._slot_tree import ConcreteSlotTreeNode
-from templatey._slot_tree import DynamicClassSlotTreeNode
+from templatey._slot_tree import ConcretePrerenderTreeNode
+from templatey._slot_tree import DynamicClassPrerenderTreeNode
 from templatey._slot_tree import SlotTreeNode
-from templatey._slot_tree import SlotTreeRoute
+from templatey._slot_tree import PrerenderTreeNode
+from templatey._slot_tree import PrerenderTreeRoute
 from templatey._slot_tree import gather_dynamic_class_slots
-from templatey._slot_tree import merge_into_slot_tree
+from templatey._slot_tree import merge_into_prerender_tree
 from templatey._slot_tree import update_encloser_with_trees_from_slot
 from templatey._types import Content
 from templatey._types import DynamicClassSlot
@@ -38,7 +41,13 @@ from templatey._types import TemplateInstanceID
 from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
 from templatey._types import Var
-from templatey.templates import FieldConfig
+
+if typing.TYPE_CHECKING:
+    from templatey.environments import AsyncTemplateLoader
+    from templatey.environments import SyncTemplateLoader
+    from templatey.templates import FieldConfig
+    from templatey.templates import SegmentModifier
+    from templatey.templates import TemplateConfig
 
 type GroupedTemplateInvocations = dict[TemplateClass, list[Provenance]]
 type TemplateLookupByID = dict[TemplateInstanceID, TemplateParamsInstance]
@@ -69,6 +78,58 @@ def ensure_signature(template_cls: TemplateClass) -> TemplateSignature:
     return signature
 
 
+@dataclass(slots=True, kw_only=True)
+class TemplateSignature2:
+    """Signature objects are created immediately upon template
+    definition time, and are populated with information on the template
+    as it becomes available. Any object decorated with ``@template``
+    will have a signature, but not all items in the signature will be
+    available at all points of the template's lifecycle.
+    """
+    # These are all available at template definition time and set then
+    config: TemplateConfig
+    # Note: whatever kind of object this is, it needs to be understood by the
+    # template loader defined in the template environment.
+    # In theory we could make this a typevar, but in practice the overarching
+    # ``TemplateIntersectable`` would need to have a typevar within a classvar,
+    # which python doesn't currently support.
+    resource_locator: object
+    segment_modifiers: tuple[SegmentModifier, ...]
+    # Used primarily for libraries shipping redistributable templates
+    explicit_loader: AsyncTemplateLoader | SyncTemplateLoader | None
+
+    # These are all set during the template loading process, in stages, as
+    # increasingly more information is available.
+    fieldset: NormalizedFieldset = field(init=False, repr=False)
+    total_inclusions: frozenset[TemplateClass] = field(
+        init=False, repr=False)
+    slot_tree: SlotTreeNode = field(init=False, repr=False)
+    prerender_tree: PrerenderTreeNode = field(init=False, repr=False)
+
+    def repr_2(self):
+        """This wraps the default repr, including any other non-init
+        vars. We chose this as the least-bad way to get reprs to work
+        while still having a way to debug the signature manually.
+        """
+        bare_repr = repr(self)
+        noninit_fields: list[str] = []
+        for dc_field in fields(self):
+            if not dc_field.init:
+                noninit_fields.append(dc_field.name)
+
+        to_join = [bare_repr[:-1]]
+        for noninit_fieldname in noninit_fields:
+            try:
+                value = getattr(self, noninit_fieldname)
+            except AttributeError:
+                value = '<unset>'
+
+            to_join.append(f'{noninit_fieldname}={value}')
+
+        joined = ', '.join(to_join)
+        return f'{joined})'
+
+
 @dataclass(slots=True)
 class TemplateSignature:
     """This class stores the processed interface based on the params.
@@ -83,7 +144,7 @@ class TemplateSignature:
     module.
     """
     # It's nice to have this available, especially when resolving forward refs,
-    # but unlike eg the slot tree, it's trivially easy for us to avoid GC
+    # but unlike eg the prerender tree, it's trivially easy for us to avoid GC
     # loops within the signature
     template_cls_ref: ref[TemplateClass]
 
@@ -91,20 +152,20 @@ class TemplateSignature:
     var_names: frozenset[str]
     content_names: frozenset[str]
     # Note that these are all ONLY the direct nesteds; these do not include
-    # anything from deeper in the slot tree.
+    # anything from deeper in the prerender tree.
     slot_names: frozenset[str]
     dynamic_class_slot_names: frozenset[str]
 
-    _dynamic_class_slot_tree: DynamicClassSlotTreeNode
+    _dynamic_class_prerender_tree: DynamicClassPrerenderTreeNode
     _ordered_dynamic_class_slot_names: list[str] = field(init=False)
     # Note that these contain all included types, not just the ones on the
     # outermost layer that are associated with the signature. In other words,
     # they include the flattened recursion of all included slots, all the way
     # down the tree
-    _slot_tree_lookup: dict[TemplateClass, ConcreteSlotTreeNode]
+    _prerender_tree_lookup: dict[TemplateClass, ConcretePrerenderTreeNode]
 
     # I really don't like that we need to remember to recalculate this every
-    # time we update the slot tree lookup, but for rendering performance
+    # time we update the prerender tree lookup, but for rendering performance
     # reasons we want this to be precalculated before every call to render.
     included_template_classes: frozenset[TemplateClass] = field(init=False)
 
@@ -133,8 +194,8 @@ class TemplateSignature:
         # words, we want to be able to check a template type, and then see all
         # possible getattr() sequences that arrive at an instance of that
         # template type.
-        tree_wip: dict[TemplateClass, ConcreteSlotTreeNode]
-        tree_wip = defaultdict(SlotTreeNode)
+        tree_wip: dict[TemplateClass, ConcretePrerenderTreeNode]
+        tree_wip = defaultdict(PrerenderTreeNode)
 
         concrete_slot_defs = cls._normalize_slot_defs(slots.items())
 
@@ -149,14 +210,14 @@ class TemplateSignature:
             # Also: yes, this is resolved at annotation time, and not a forward
             # ref!
             if slot_type is template_cls:
-                recursive_slot_tree = tree_wip[slot_type]
-                recursive_slot_tree.is_terminus = True
-                recursive_slot_tree.is_recursive = True
-                recursive_slot_route = SlotTreeRoute.new(
+                recursive_prerender_tree = tree_wip[slot_type]
+                recursive_prerender_tree.is_terminus = True
+                recursive_prerender_tree.is_recursive = True
+                recursive_slot_route = PrerenderTreeRoute.new(
                     slot_name,
                     slot_type,
-                    recursive_slot_tree)
-                recursive_slot_tree.append(recursive_slot_route)
+                    recursive_prerender_tree)
+                recursive_prerender_tree.append(recursive_slot_route)
 
             # Remember that we expanded the union already, so this is
             # guaranteed to be a single concrete ``slot_type``.
@@ -170,18 +231,18 @@ class TemplateSignature:
         # Okay, so here's the deal. Every time we add a slot,
         # might create a recursive reference loop (if it had a forward ref to
         # the current enclosing class). So far so good. The problem
-        # is, this means that existing slot trees will be incomplete.
+        # is, this means that existing prerender trees will be incomplete.
         # Therefore, at the end of the process, we always circle back and check
-        # for a self-referential slot tree, and if it exists, merge it into
+        # for a self-referential prerender tree, and if it exists, merge it into
         # all the rest.
         self_referential_recursive_tree = tree_wip.get(template_cls)
         if self_referential_recursive_tree is not None:
-            for slot_type, slot_tree in tree_wip.items():
+            for slot_type, prerender_tree in tree_wip.items():
                 if slot_type is not template_cls:
-                    merge_into_slot_tree(
+                    merge_into_prerender_tree(
                         template_cls,
                         slot_type,
-                        slot_tree,
+                        prerender_tree,
                         self_referential_recursive_tree)
 
         # Oh thank god.
@@ -190,14 +251,14 @@ class TemplateSignature:
             template_cls_ref=ref(template_cls),
             slot_names=slot_names,
             dynamic_class_slot_names=dynamic_class_slot_names,
-            _dynamic_class_slot_tree=gather_dynamic_class_slots(
+            _dynamic_class_prerender_tree=gather_dynamic_class_slots(
                 template_cls,
                 set(dynamic_class_slot_names),
                 tree_wip),
             data_names=data_names,
             var_names=var_names,
             content_names=content_names,
-            _slot_tree_lookup=tree_wip)
+            _prerender_tree_lookup=tree_wip)
 
     @classmethod
     def _normalize_slot_defs(
@@ -230,11 +291,11 @@ class TemplateSignature:
 
     def stringify_all(self) -> str:
         """This is a debug method that creates a prettified string
-        version of the entire slot tree lookup (pending and concrete).
+        version of the entire prerender tree lookup (pending and concrete).
         """
         to_join = []
-        to_join.append('Slot tree slots:')
-        for template_class, root_node in self._slot_tree_lookup.items():
+        to_join.append('prerender tree slots:')
+        for template_class, root_node in self._prerender_tree_lookup.items():
             to_join.append(f'  {template_class}')
             to_join.append(root_node.stringify(depth=1))
 

@@ -20,6 +20,12 @@ except ImportError:
 from templatey._bootstrapping import PARSED_EMPTY_TEMPLATE
 from templatey._bootstrapping import EmptyTemplate
 from templatey._error_collector import ErrorCollector
+from templatey._fields import NormalizedFieldset
+from templatey._fields import normalize_slot_annotations
+from templatey._signature import TemplateSignature2
+from templatey._slot_tree import build_slot_tree
+from templatey._types import DYNAMIC_TEMPLATE_CLASS
+from templatey._types import DynamicTemplateClass
 from templatey._types import TemplateClass
 from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
@@ -172,8 +178,9 @@ class RenderEnvironment:
 
         If force_reload is True, bypasses the cache.
         """
-        template_class = cast(type[TemplateIntersectable], template)
-        explicit_loader = template_class._templatey_explicit_loader
+        template_xable = cast(type[TemplateIntersectable], template)
+        signature = template_xable._templatey_signature
+        explicit_loader = signature.explicit_loader
         if explicit_loader is None:
             if not self._can_load_async:
                 raise TypeError(
@@ -198,9 +205,10 @@ class RenderEnvironment:
 
         template_text = await template_loader.load_async(
             template,
-            template_class._templatey_resource_locator)
+            signature.resource_locator)
         return self._parse_and_cache(
-            template_class,
+            template,
+            signature,
             template_text,
             override_validation_strictness)
 
@@ -217,8 +225,9 @@ class RenderEnvironment:
 
         If force_reload is True, bypasses the cache.
         """
-        template_class = cast(type[TemplateIntersectable], template)
-        explicit_loader = template_class._templatey_explicit_loader
+        template_xable = cast(type[TemplateIntersectable], template)
+        signature = template_xable._templatey_signature
+        explicit_loader = signature.explicit_loader
         if explicit_loader is None:
             if not self._can_load_sync:
                 raise TypeError(
@@ -250,91 +259,185 @@ class RenderEnvironment:
 
         template_text = template_loader.load_sync(
             template,
-            template_class._templatey_resource_locator)
+            signature.resource_locator)
         return self._parse_and_cache(
-            template_class,
+            template,
+            signature,
             template_text,
             override_validation_strictness)
 
     def _parse_and_cache(
             self,
-            template_class: type[TemplateIntersectable],
+            template_cls: TemplateClass,
+            signature: TemplateSignature2,
             template_text: str,
             override_validation_strictness: None | bool
             ) -> ParsedTemplateResource:
         # Note: doing this first for thread safety in the sync case
         self._has_loaded_any_template = True
-        try:
-            template_config = template_class._templatey_config
-            parsed_template_resource = parse(
-                template_text, template_config.interpolator)
-            segment_modifiers = template_class._templatey_segment_modifiers
-            part_index_counter = count()
 
-            parts_after_modification: list[
-                LiteralTemplateString
-                | InterpolatedSlot
-                | InterpolatedContent
-                | InterpolatedVariable
-                | InterpolatedFunctionCall] = []
+        # We call these now (instead of, for example, during @template
+        # decoration time) because it maximizes the chances that all of the
+        # type hints are available (ie, no longer forward refs).
+        self._ensure_recursive_totality(template_cls, signature)
+        self._ensure_slot_tree(template_cls, signature)
 
-            for unmodified_part in parsed_template_resource.parts:
-                # The combinatorics here are gross, but this only runs once per
-                # template load, and not once per render, so at least there's
-                # that.
-                if isinstance(unmodified_part, str):
-                    for modifier in segment_modifiers:
-                        had_matches, after_mods = modifier.apply_and_flatten(
-                            unmodified_part)
+        template_config = signature.config
+        parsed_template_resource = parse(
+            template_text, template_config.interpolator)
+        segment_modifiers = signature.segment_modifiers
+        part_index_counter = count()
 
-                        if had_matches:
-                            parts_after_modification.extend(
-                                _coerce_modified_segment(
-                                    modified_segment, part_index_counter)
-                                for modified_segment in after_mods)
-                            break
+        parts_after_modification: list[
+            LiteralTemplateString
+            | InterpolatedSlot
+            | InterpolatedContent
+            | InterpolatedVariable
+            | InterpolatedFunctionCall] = []
 
-                    else:
-                        # We still want to create a copy here, in case the
-                        # template loader is doing its own caching beyond what
-                        # we do within the env
-                        parts_after_modification.append(
-                            LiteralTemplateString(
-                                unmodified_part,
-                                part_index=next(part_index_counter)))
+        for unmodified_part in parsed_template_resource.parts:
+            # The combinatorics here are gross, but this only runs once per
+            # template load, and not once per render, so at least there's
+            # that.
+            if isinstance(unmodified_part, str):
+                for modifier in segment_modifiers:
+                    had_matches, after_mods = modifier.apply_and_flatten(
+                        unmodified_part)
+
+                    if had_matches:
+                        parts_after_modification.extend(
+                            _coerce_modified_segment(
+                                modified_segment, part_index_counter)
+                            for modified_segment in after_mods)
+                        break
 
                 else:
-                    parts_after_modification.append(dc_replace(
-                        unmodified_part,
-                        part_index=next(part_index_counter)))
+                    # We still want to create a copy here, in case the
+                    # template loader is doing its own caching beyond what
+                    # we do within the env
+                    parts_after_modification.append(
+                        LiteralTemplateString(
+                            unmodified_part,
+                            part_index=next(part_index_counter)))
 
-            # Note: cannot just do dc_replace; we have a bunch more bookkeeping
-            # than that!
-            parsed_template_resource = ParsedTemplateResource.from_parts(
-                parts_after_modification)
-
-            if override_validation_strictness is None:
-                strict_mode = self.strict_interpolation_validation
             else:
-                strict_mode = override_validation_strictness
+                parts_after_modification.append(dc_replace(
+                    unmodified_part,
+                    part_index=next(part_index_counter)))
 
-            self._validate_env_functions(
-                template_class, parsed_template_resource,)
-            self._validate_template_signature(
-                template_class, parsed_template_resource,
-                strict_mode=strict_mode)
+        # Note: cannot just do dc_replace; we have a bunch more bookkeeping
+        # than that!
+        parsed_template_resource = ParsedTemplateResource.from_parts(
+            parts_after_modification)
 
-        except Exception:
-            self._has_loaded_any_template = False
-            raise
+        if override_validation_strictness is None:
+            strict_mode = self.strict_interpolation_validation
+        else:
+            strict_mode = override_validation_strictness
 
-        template = cast(type[TemplateParamsInstance], template_class)
-        self._parsed_template_cache[template] = parsed_template_resource
+        self._validate_env_functions(
+            template_cls, parsed_template_resource)
+        self._validate_template_signature(
+            template_cls, signature, parsed_template_resource,
+            strict_mode=strict_mode)
+
+        self._parsed_template_cache[template_cls] = parsed_template_resource
         return parsed_template_resource
+
+    def _ensure_recursive_totality(
+            self,
+            template_cls: TemplateClass,
+            signature: TemplateSignature2):
+        """This function constructs and populates the
+        ``signature.fieldset`` and ``signature.total_inclusions``
+        attributes if (and only if) either one of them is missing, and
+        then recursively does the same for all non-dynamic nested slot
+        classes.
+
+        This is helpful for several reasons:
+        ++  it makes sure that we have a full fieldset and descendant
+            classes for the entire descendancy tree, so that we can
+            construct a slot tree (and thereafter a prerender tree) for
+            the class
+        ++  if the attributes already exist, it does nothing, so we
+            don't waste work on nested template classes
+        ++  it allows parsed template resources to fall out of cache
+            without discarding the work we did processing the signature
+            itself
+        """
+        try:
+            if not hasattr(signature, 'fieldset'):
+                signature.fieldset = NormalizedFieldset.from_template_cls(
+                    template_cls)
+
+            if not hasattr(signature, 'total_inclusions'):
+                total_classes: set[TemplateClass] = {template_cls}
+
+                # Note that in addition to saving us work (both by deduping
+                # and by reusing the results from creating the fieldset),
+                # this also flattens unions, aliases, etc.
+                direct_inclusions: set[TemplateClass] = set()
+                for _, nested_slot_cls in signature.fieldset.slotpaths:
+                    # However, we do still need to drop out any dynamic
+                    # template class, since it (by definition) isn't an actual
+                    # slot!
+                    if nested_slot_cls is not DYNAMIC_TEMPLATE_CLASS:
+                        direct_inclusions.add(nested_slot_cls)
+
+                for nested_slot_cls in direct_inclusions:
+                    nested_signature = cast(
+                        type[TemplateIntersectable], nested_slot_cls
+                    )._templatey_signature
+                    self._ensure_recursive_totality(
+                        nested_slot_cls,
+                        nested_signature)
+                    # Note that this has to come after the recursive call,
+                    # because we depend upon its results!
+                    total_classes.update(
+                        nested_signature.total_inclusions)
+
+                signature.total_inclusions = frozenset(total_classes)
+
+        # So the logic here is that we want the fieldset and the total included
+        # classes to always be in sync, but we also don't want to always run
+        # the recursive check. So this helps us protect against errors
+        # resulting in the two attributes going out of sync without additional
+        # overhead.
+        # Note: I considered moving the total_inclusions into the
+        # fieldset, but it didn't really make sense there. In addition to the
+        # "it's just a weird place for it" feeling, _ensure_recursive_totality
+        # really belongs HERE, and it was creating awkward mutual recursion
+        # loops between ``NormalizedFieldset.from_template_cls`` and
+        # this.
+        except Exception:
+            try:
+                del signature.fieldset
+            except AttributeError:
+                pass
+            try:
+                del signature.total_inclusions
+            except AttributeError:
+                pass
+
+    def _ensure_slot_tree(
+            self,
+            template_cls: TemplateClass,
+            signature: TemplateSignature2):
+        """After ensuring recursive totality, call this to make sure
+        that the slot tree is defined on the template.
+        """
+        if not hasattr(signature, 'slot_tree'):
+            signature.slot_tree = build_slot_tree(template_cls)
+
+    def _ensure_prerender_tree(
+            self,
+            template_cls: TemplateClass,
+            signature: TemplateSignature2):
+            
 
     def _validate_env_functions(
             self,
-            template_class: type[TemplateIntersectable],
+            template_class: TemplateClass,
             parsed_template_resource: ParsedTemplateResource
             ) -> Literal[True]:
         """Makes sure that the template environment contains all of the
@@ -373,7 +476,8 @@ class RenderEnvironment:
 
     def _validate_template_signature(
             self,
-            template_class: type[TemplateIntersectable],
+            template_class: TemplateClass,
+            signature: TemplateSignature2,
             parsed_template_resource: ParsedTemplateResource,
             *,
             strict_mode: bool
@@ -382,12 +486,12 @@ class RenderEnvironment:
         names referenced in the template text. Returns True or
         raises MismatchedTemplateSignature.
         """
-        template_signature = template_class._templatey_signature
-        variable_names = template_signature.var_names
-        slot_names = template_signature.slot_names
-        dynamic_class_slot_names = template_signature.dynamic_class_slot_names
-        content_names = template_signature.content_names
-        data_names = template_signature.data_names
+        fieldset = signature.fieldset
+        variable_names = fieldset.var_names
+        slot_names = fieldset.slot_names
+        dynamic_class_slot_names = fieldset.dynamic_class_slot_names
+        content_names = fieldset.content_names
+        data_names = fieldset.data_names
 
         if strict_mode:
             variables_mismatch = (

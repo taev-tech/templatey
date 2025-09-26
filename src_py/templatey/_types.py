@@ -10,7 +10,6 @@ from types import EllipsisType
 from typing import Annotated
 from typing import ClassVar
 from typing import Literal
-from typing import NamedTuple
 from typing import Protocol
 
 from docnote import ClcNote
@@ -19,12 +18,7 @@ from typing_extensions import TypeIs
 if typing.TYPE_CHECKING:
     from _typeshed import DataclassInstance
 
-    from templatey._fields import NormalizedFieldset
-    from templatey._signature import TemplateSignature
-    from templatey.environments import AsyncTemplateLoader
-    from templatey.environments import SyncTemplateLoader
-    from templatey.templates import SegmentModifier
-    from templatey.templates import TemplateConfig
+    from templatey._signature import TemplateSignature2
 else:
     DataclassInstance = object
 
@@ -197,25 +191,12 @@ def is_template_instance(instance: object) -> TypeIs[TemplateIntersectable]:
 
 class TemplateIntersectable(Protocol):
     """This is the actual template protocol, which we would
-    like to intersect with the TemplateParamsInstance, but cannot.
-    Primarily included for documentation.
+    like to intersect with the TemplateParamsInstance, but cannot
+    (because python currently lacks an intersection type).
+
+    Partly here for documentation, partly for use in ``cast`` calls.
     """
-    _templatey_config: ClassVar[TemplateConfig]
-    # Note: whatever kind of object this is, it needs to be understood by the
-    # template loader defined in the template environment. It would be nice for
-    # this to be a typvar, but python doesn't currently support typevars in
-    # classvars
-    _templatey_resource_locator: ClassVar[object]
-    _templatey_fieldset: ClassVar[NormalizedFieldset]
-    _templatey_signature: ClassVar[TemplateSignature]
-    # Oldschool here for performance reasons; otherwise this would be a dict.
-    # Field names match the field names from the params; the value is gathered
-    # from the metadata value on the field.
-    _templatey_prerenderers: ClassVar[NamedTuple]
-    _templatey_segment_modifiers: ClassVar[tuple[SegmentModifier]]
-    # Used primarily for libraries shipping redistributable templates
-    _templatey_explicit_loader: ClassVar[
-        AsyncTemplateLoader | SyncTemplateLoader | None]
+    _templatey_signature: ClassVar[TemplateSignature2]
 
 
 # Note: we don't need cryptographically secure IDs here, so let's preserve
@@ -231,7 +212,7 @@ def create_templatey_id() -> int:
     """Templatey IDs are unique identifiers (theoretically, absent
     birthday collisions) that we currently use in two places:
     ++  as a scope ID, which is used when defining templates in closures
-    ++  for giving slot tree nodes a unique reference target for
+    ++  for giving slot/prerender tree nodes a unique reference target for
         recursion loops while copying and merging, which is more robust
         than ``id(target)`` and can be transferred via dataclass field
         into cloned/copied/merged nodes.

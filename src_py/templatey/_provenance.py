@@ -5,7 +5,7 @@ from dataclasses import KW_ONLY
 from dataclasses import dataclass
 from dataclasses import field
 
-from templatey._slot_tree import SlotTreeNode
+from templatey._slot_tree import PrerenderTreeNode
 from templatey._types import TemplateClass
 from templatey._types import TemplateInstanceID
 from templatey._types import TemplateParamsInstance
@@ -159,22 +159,22 @@ class Provenance:
         return value
 
     @classmethod
-    def from_slot_tree(
+    def from_prerender_tree(
             cls,
             root_template_instance: TemplateParamsInstance,
-            root_slot_tree: SlotTreeNode,
+            root_prerender_tree: PrerenderTreeNode,
             from_injection: Provenance | None,
             ) -> list[Provenance]:
-        """Given a root template instance, walks the passed slot tree,
+        """Given a root template instance, walks the passed prerender tree,
         finding all terminus points. Returns them as a list of
         provenance instances.
 
-        Note that you must choose the correct slot tree from the
-        slot tree lookup in advance; this simply converts slot tree
+        Note that you must choose the correct prerender tree from the
+        prerender tree lookup in advance; this simply converts prerender tree
         terminus points into provenances based on a root template
         instance: no more, no less.
 
-        TODO: it would be nice if we could pre-merge the slot trees during
+        TODO: it would be nice if we could pre-merge the prerender trees during
         template loading for the actual use cases (env functions invocations
         and, eventually, dynamic slot types) so that we didn't need a separate
         tree traversal for every template class. But for now, this is good
@@ -184,7 +184,7 @@ class Provenance:
         stack: list[_TreeFlattenerFrame] = [
             _TreeFlattenerFrame(
                 active_instance=root_template_instance,
-                active_subtree=root_slot_tree,
+                active_subtree=root_prerender_tree,
                 target_subtree_index=0,
                 target_instance_index=0,
                 wip_provenance=Provenance(
@@ -235,7 +235,7 @@ class Provenance:
             else:
                 target_instances_count = this_frame.target_instances_count
                 # We've exhausted the target instances; reset the state for
-                # the next slot tree route and then continue.
+                # the next prerender tree route and then continue.
                 if this_frame.target_instance_index >= target_instances_count:
                     # Note: we're deliberately skipping the target instances
                     # themselves, because it'll just get overwritten the next
@@ -291,7 +291,7 @@ class _TreeFlattenerFrame:
     """
     """
     active_instance: TemplateParamsInstance
-    active_subtree: SlotTreeNode
+    active_subtree: PrerenderTreeNode
     target_subtree_index: int
     target_instance_index: int
     target_instances_count: int = field(kw_only=True, default=0)

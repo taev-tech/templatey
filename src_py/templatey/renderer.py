@@ -14,9 +14,12 @@ from dataclasses import dataclass
 from dataclasses import field
 from functools import partial
 from functools import singledispatch
+from typing import Annotated
 from typing import NamedTuple
 from typing import cast
 from typing import overload
+
+from docnote import Note
 
 from templatey._bootstrapping import EMPTY_TEMPLATE_INSTANCE
 from templatey._bootstrapping import EMPTY_TEMPLATE_XABLE
@@ -24,7 +27,7 @@ from templatey._error_collector import ErrorCollector
 from templatey._provenance import Provenance
 from templatey._provenance import ProvenanceNode
 from templatey._signature import TemplateSignature
-from templatey._slot_tree import SlotTreeNode
+from templatey._slot_tree import PrerenderTreeNode
 from templatey._slot_tree import extract_dynamic_class_slot_types
 from templatey._types import InterfaceAnnotationFlavor
 from templatey._types import TemplateClass
@@ -84,7 +87,14 @@ class FuncExecutionResult:
 class RenderEnvRequest:
     """
     """
-    to_load: Collection[type[TemplateParamsInstance]]
+    to_load: Annotated[
+            Collection[TemplateParamsInstance],
+            Note('''These are any root template instances that need loading.
+                The render env is responsible for:
+                ++  extracting out all dependant template classes and adding
+                    them to the preload
+                ++  extracting out all instances of dynamic template classes
+                    and also adding them to the preload''')]
     to_execute: Collection[FuncExecutionRequest]
     error_collector: ErrorCollector
 
@@ -113,7 +123,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
         template_preload={},
         function_precall={},
         error_collector=error_collector)
-    yield from context.prepopulate(template_instance)
+    yield from context.prep_render(template_instance)
     template_xable = cast(TemplateIntersectable, template_instance)
     root_template_preload = context.template_preload[type(template_instance)]
     render_stack: list[_RenderStackFrame] = [
@@ -129,7 +139,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     instance_id=id(template_instance),
                     instance=template_instance),)),
             instance=template_instance,
-            prerenderers=template_xable._templatey_prerenderers)]
+            transformers=template_xable._templatey_transformers)]
 
     while render_stack:
         render_frame = render_stack[-1]
@@ -165,16 +175,16 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
             # to be defensive against infinite loops.
             try:
                 raw_val = unescaped_vars[next_part.name]
-                prerenderer = getattr(
-                    render_frame.prerenderers, next_part.name, None)
-                if prerenderer is None:
-                    prerender = raw_val
+                transformer = getattr(
+                    render_frame.transformers, next_part.name, None)
+                if transformer is None:
+                    transformed = raw_val
                 else:
-                    prerender = cast(str | None, prerenderer(raw_val))
+                    transformed = cast(str | None, transformer(raw_val))
 
-                if prerender is not None:
+                if transformed is not None:
                     unescaped_val = _apply_format(
-                        prerender,
+                        transformed,
                         next_part.config)
                     escaped_val = render_frame.config.variable_escaper(
                         unescaped_val)
@@ -183,7 +193,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
 
             # Note: this could be eg a lookup error because of a missing
             # variable. This isn't redundant with the error collection within
-            # prepopulation.
+            # prep_render.
             except Exception as exc:
                 error_collector.append(exc)
 
@@ -210,22 +220,22 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                             placeholder_on_error=''),
                         render_frame.config,
                         next_part.config,
-                        render_frame.prerenderers,
+                        render_frame.transformers,
                         error_collector))
 
                 else:
-                    prerenderer = getattr(
-                        render_frame.prerenderers, next_part.name, None)
-                    if prerenderer is None:
-                        prerender = val_from_params
+                    transformer = getattr(
+                        render_frame.transformers, next_part.name, None)
+                    if transformer is None:
+                        transformed = val_from_params
                     else:
-                        prerender = cast(
-                            str | None, prerenderer(val_from_params))
+                        transformed = cast(
+                            str | None, transformer(val_from_params))
 
                     # As usual, values of None are omitted
-                    if prerender is not None:
+                    if transformed is not None:
                         formatted_val = _apply_format(
-                            prerender,
+                            transformed,
                             next_part.config)
                         render_frame.config.content_verifier(formatted_val)
                         output.extend(
@@ -233,7 +243,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
 
             # Note: this could be eg a lookup error because of a missing
             # variable. This isn't redundant with the error collection within
-            # prepopulation.
+            # prep_render.
             except Exception as exc:
                 error_collector.append(exc)
 
@@ -315,10 +325,10 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                                 encloser_slot_index=slot_instance_index,
                                 instance_id=id(slot_instance),
                                 instance=slot_instance)),
-                        prerenderers=
-                            slot_instance_xable._templatey_prerenderers))
+                        transformers=
+                            slot_instance_xable._templatey_transformers))
 
-            # This catches prefix issues, missing prerenders, etc.
+            # This catches prefix issues, missing transformeds, etc.
             except Exception as exc:
                 error_collector.append(exc)
 
@@ -380,8 +390,8 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                                 encloser_slot_index=-1,
                                 instance_id=id(injected_instance),
                                 instance=injected_instance),),
-                        prerenderers=
-                            injected_instance_xable._templatey_prerenderers))
+                        transformers=
+                            injected_instance_xable._templatey_transformers))
 
             # This is primarily catching missing preloads, though there might
             # be some internal errors in there too
@@ -424,7 +434,7 @@ class _RenderStackFrame:
     config: TemplateConfig
     signature: TemplateSignature
     provenance: Provenance
-    prerenderers: NamedTuple
+    transformers: NamedTuple
     parts: Sequence[
         str
         | InterpolatedSlot
@@ -448,20 +458,102 @@ class _RenderStackFrame:
 
 
 @dataclass(slots=True)
-class _PrepopulationBatch:
+class _RenderPrepBatch:
     """
     """
     injection_provenance: Provenance | None
     # Note that this might be an injected template!
     local_root_instance: TemplateParamsInstance
+    local_root_cls: TemplateClass
     function_backlog: list[FuncExecutionRequest]
-    template_backlog: set[TemplateClass]
 
-    def extract_injections(
+    def extract_next_round(
+            self,
+            template_preload:
+                dict[TemplateClass, ParsedTemplateResource],
+            function_precall:
+                dict[_PrecallCacheKey, FuncExecutionResult],
+            error_collector: ErrorCollector,
+            ) -> list[_RenderPrepBatch]:
+        """Given the passed preloaded/precalled results, creates any new
+        batches that need to be executed in a follow-up environment
+        request (for example, because an env function injected a
+        template).
+        
+        
+        
+        don't forget that building the tree (incl culling) and using the
+        tree are two different things. one happens at load time, one at
+        render time. in other words, treat loading as a whole separate
+        thing.
+        
+        
+        OKAY SO. The game plan here is to extract a backlog for each of
+        the loaded stuffs in self, and group each of those into a batch.
+        That's why this is separate from _extract_backlog.
+        
+        
+        Meanwhile, _extract_backlog will look at a single local root.
+        It'll first traverse the NEW prerender tree, getting all needed templates
+        and any dynamic ones.
+        
+        
+        Agggghhh that's not quite right. The problem is that, in order to 
+        know that there are function invocations, you first need to actually
+        load the templates. so I don't think you can do proper tree culling
+        until after that's been done. but you first need to extract all of the
+        nested template classes.
+        
+        
+        So I think you'll probably want to separate that out into discrete
+        steps:
+        1.. figure out all included template classes;
+            this can happen before loading anything. It won't include any dynamic
+            template classes, though!
+        2.. preload all of those template classes, discovering all of the
+            function calls
+        3.. construct the new prerender tree
+        4.. traverse it, looking for all dynamic classes and execution requests
+        5.. create new batches
+        
+        .... does kinda raise the question if it would actually be better to
+        have a separate tree just for the dynamic classes, since that wouldn't
+        require a template load to figure out. hmmmmm.
+        
+        
+        
+        
+        
+        """
+        full_template_backlog, next_precall = self._extract_backlog()
+        
+        # NOTE: we don't need to worry about doing a difference update; that's
+        # handled within _RenderContext.prep_render!
+
+    @classmethod
+    def _extract_backlog(
+            cls,
+            local_root_instance: TemplateParamsInstance
+            ) -> tuple[set[TemplateClass], list[FuncExecutionRequest]]:
+        """
+        
+        MAKE SURE TO INCLUDE THE ROOT TEMPLATE CLASS!
+        
+        """
+        dynamic_additions = set()
+        # Note that this always includes the root template class
+        set(
+                root_template_xable
+                ._templatey_signature.included_template_classes)
+
+
+
+
+    def __extract_injections(
             self,
             function_precall:
                 dict[_PrecallCacheKey, FuncExecutionResult]
-            ) -> list[_PrepopulationBatch]:
+            ) -> list[_RenderPrepBatch]:
         result = []
         for exe_req in self.function_backlog:
             result_cache_key = exe_req.result_key
@@ -471,7 +563,7 @@ class _PrepopulationBatch:
                 injected_xable = cast(
                     TemplateIntersectable, injected_template)
 
-                result.append(_PrepopulationBatch(
+                result.append(_RenderPrepBatch(
                     injection_provenance=exe_req.provenance,
                     local_root_instance=injected_template,
                     function_backlog=[],
@@ -481,17 +573,17 @@ class _PrepopulationBatch:
 
         return result
 
-    def extract_invocations(
+    def __extract_invocations(
             self,
             template_preload:
                 dict[TemplateClass, ParsedTemplateResource],
             error_collector: ErrorCollector,
-            ) -> _PrepopulationBatch | None:
+            ) -> _RenderPrepBatch | None:
         function_backlog = []
         injection_provenance = self.injection_provenance
         root_instance = self.local_root_instance
         root_xable = cast(TemplateIntersectable, root_instance)
-        slot_tree_lookup = root_xable._templatey_signature._slot_tree_lookup
+        prerender_tree_lookup = root_xable._templatey_signature._prerender_tree_lookup
 
         for template_cls in self.template_backlog:
             abstract_calls = (
@@ -499,22 +591,22 @@ class _PrepopulationBatch:
 
             if abstract_calls:
                 # Remember: for the root template, it might or might not
-                # exist in the slot tree, depending on whether or not it has
+                # exist in the prerender tree, depending on whether or not it has
                 # recursion loops. That being said, we want to be
                 # defensive, and not assume that BECAUSE it's missing, it's
                 # automatically the root instance.
                 if template_cls is type(root_instance):
-                    slot_tree_root = slot_tree_lookup.get(
+                    prerender_tree_root = prerender_tree_lookup.get(
                         template_cls,
-                        SlotTreeNode(is_terminus=True))
+                        PrerenderTreeNode(is_terminus=True))
                 else:
-                    slot_tree_root = slot_tree_lookup[template_cls]
+                    prerender_tree_root = prerender_tree_lookup[template_cls]
 
                 # Oof. The combinatorics here are brutal.
                 for provenance, abstract_call in itertools.product(
-                    Provenance.from_slot_tree(
+                    Provenance.from_prerender_tree(
                         root_instance,
-                        slot_tree_root,
+                        prerender_tree_root,
                         from_injection=injection_provenance),
                     itertools.chain.from_iterable(abstract_calls.values())
                 ):
@@ -577,7 +669,7 @@ class _PrepopulationBatch:
                             provenance=provenance))
 
         if function_backlog:
-            return _PrepopulationBatch(
+            return _RenderPrepBatch(
                 injection_provenance=injection_provenance,
                 local_root_instance=self.local_root_instance,
                 function_backlog=function_backlog,
@@ -592,7 +684,7 @@ class _RenderContext:
     function_precall: dict[_PrecallCacheKey, FuncExecutionResult]
     error_collector: ErrorCollector
 
-    def prepopulate(
+    def prep_render(
             self,
             root_template_instance: TemplateParamsInstance
             ) -> Iterable[RenderEnvRequest]:
@@ -607,15 +699,19 @@ class _RenderContext:
         function_precall: \
             dict[_PrecallCacheKey, FuncExecutionResult] = self.function_precall
 
-        batches: list[_PrepopulationBatch] = [_PrepopulationBatch(
-            injection_provenance=None,
-            local_root_instance=root_template_instance,
-            function_backlog=[],
-            # Note that this always includes the root template class
-            template_backlog=set(
-                root_template_xable
-                ._templatey_signature.included_template_classes))]
+        batches: list[_RenderPrepBatch] = [
+            _RenderPrepBatch(
+                local_root_instance=root_template_instance,
+                local_root_cls=type(root_template_instance),
+                injection_provenance=None,
+                function_backlog=[])]
 
+        # This seems a little weird to have nested loops over the same thing,
+        # but the idea is that we could have multiple batches produced by a
+        # single prerenderulation loop, but we want to minimize the number of
+        # render env requests we emit. So we group together all of the batches
+        # that are available at the start of any given loop, into a single
+        # env request.
         while batches:
             to_load = set()
             to_execute = []
@@ -626,16 +722,83 @@ class _RenderContext:
             # was actually required.
             for batch in batches:
                 local_root_instance = batch.local_root_instance
-                to_load.update(batch.template_backlog)
+                to_load.add(batch.local_root_cls)
                 to_execute.extend(batch.function_backlog)
-                to_load.update(extract_dynamic_class_slot_types(
-                    local_root_instance,
-                    cast(TemplateIntersectable, local_root_instance)
-                        ._templatey_signature._dynamic_class_slot_tree))
+
+            # This strips anything we've already loaded -- including any
+            # nested classes -- to avoid extra effort from the render env.
             to_load.difference_update(template_preload)
 
+
+
+            
+            
+            
+            
+            
+            
+            raise NotImplementedError(
+                '''
+                TODO LEFT OFF HERE
+                
+                Okay, you've got another something that needs a reorg.
+                
+                In general, the new flow makes a lot more sense; the signature
+                is calculated in parts and updated piecemeal as more information
+                comes in.
+                
+                You still need to convert the slot tree to a prerender tree; that
+                isn't being done anywhere currently. This will go in the render
+                env.
+                
+                The render env requests will now store template root
+                instances. Keep in mind that there's usually only a single
+                root instance; the only situation where there are more than
+                one is if you have multiple env funcs injecting new templates.
+                And then, the performance penalty of multiple loops is okay.
+                
+                So the render env then sees the root instances and first
+                does the recursive loading of all of the static stuff. Then
+                it knows its slot tree, and its total inclusions. It then:
+                ++  (within loading)
+                    ++  loads all of the total inclusions for each of the passed
+                        root instance classes
+                    ++  uses those loaded templates to construct prerender trees for
+                        each of the root instance classes
+                ++  (within rendering)
+                    ++  uses the prerender tree to extract all of the dynamic
+                        slot instances
+                    ++  loads all of those
+                    ++  recurses to extract any remaining dynamic slot instances
+                        on ^^those^^ dynamic slot instances
+                    ++  etc.
+                
+                **move the difference update for template loading into the
+                render env.** this will allow you to still check for dynamic
+                instances while not needing to reload their classes.
+                
+                ''')
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+
             yield RenderEnvRequest(
-                to_load=to_load,
+                roots_to_load=to_load,
                 to_execute=to_execute,
                 error_collector=self.error_collector,
                 results_loaded=template_preload,
@@ -650,13 +813,8 @@ class _RenderContext:
             # and not to_load/to_execute, since those will skip already-loaded
             # templates, which would result in us skipping needed invocations.
             for completed_batch in completed_batches:
-                batches.extend(completed_batch.extract_injections(
-                    function_precall))
-                next_batch = completed_batch.extract_invocations(
-                    template_preload,
-                    self.error_collector)
-                if next_batch is not None:
-                    batches.append(next_batch)
+                batches.extend(completed_batch.extract_next_round(
+                    template_preload, function_precall, self.error_collector))
 
 
 type _PrecallExecutionRequest = tuple[
@@ -683,18 +841,18 @@ def _render_complex_content(
         unescaped_vars: _ParamLookup,
         template_config: TemplateConfig,
         interpolation_config: InterpolationConfig,
-        prerenderers: NamedTuple,
+        transformers: NamedTuple,
         error_collector: ErrorCollector,
         ) -> Iterable[str]:
     try:
         extracted_vars = {
             key: unescaped_vars[key] for key in complex_content.dependencies}
-        extracted_prerenderers = {
-            key: getattr(prerenderers, key, None)
+        extracted_transformers = {
+            key: getattr(transformers, key, None)
             for key in complex_content.dependencies}
 
         for content_segment in complex_content.flatten(
-            extracted_vars, interpolation_config, extracted_prerenderers
+            extracted_vars, interpolation_config, extracted_transformers
         ):
             if isinstance(content_segment, InjectedValue):
                 raw_val = content_segment.value
@@ -790,7 +948,7 @@ def _build_render_frame_for_func_result(  # noqa: C901
             # with _InjectedInstanceContainers
             provenance=Provenance(from_injection=enclosing_provenance),
             instance=EMPTY_TEMPLATE_INSTANCE,
-            prerenderers=EMPTY_TEMPLATE_XABLE._templatey_prerenderers)
+            transformers=EMPTY_TEMPLATE_XABLE._templatey_transformers)
 
     elif resulting_parts:
         return _RenderStackFrame(
@@ -800,7 +958,7 @@ def _build_render_frame_for_func_result(  # noqa: C901
             signature=EMPTY_TEMPLATE_XABLE._templatey_signature,
             provenance=Provenance(),
             instance=EMPTY_TEMPLATE_INSTANCE,
-            prerenderers=EMPTY_TEMPLATE_XABLE._templatey_prerenderers)
+            transformers=EMPTY_TEMPLATE_XABLE._templatey_transformers)
 
 
 # Note: it would be nice if we could get a little more clever with the types

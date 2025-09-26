@@ -170,7 +170,7 @@ class TestMakeTemplateDefinition:
     def test_forward_ref_works(self):
         """Slots must be definable using forward references, and these
         forward references must be recorded on the template alongside
-        the rest of the slot tree.
+        the rest of the prerender tree.
 
         Once the reference is available, it must be resolved on the
         forward-referencing class.
@@ -203,12 +203,12 @@ class TestMakeTemplateDefinition:
 
         assert len(retval._templatey_signature._pending_ref_lookup) == 0
         assert not forward_ref_registry
-        assert Foo in retval._templatey_signature._slot_tree_lookup
+        assert Foo in retval._templatey_signature._prerender_tree_lookup
 
     def test_double_forward_ref(self):
         """Slots must be definable using forward references, and these
         forward references must be recorded on the template alongside
-        the rest of the slot tree.
+        the rest of the prerender tree.
 
         Once the reference is available, it must be resolved on the
         forward-referencing class.
@@ -258,8 +258,8 @@ class TestMakeTemplateDefinition:
         assert pending_ref in forward_ref_registry
         assert forward_ref_registry[pending_ref] == {Bar, Foo}
 
-        assert Foo in retval._templatey_signature._slot_tree_lookup
-        assert Baz in retval._templatey_signature._slot_tree_lookup
+        assert Foo in retval._templatey_signature._prerender_tree_lookup
+        assert Baz in retval._templatey_signature._prerender_tree_lookup
 
         @template(fake_template_config, object())
         class IRanOutOfFooLikeNames:
@@ -269,12 +269,12 @@ class TestMakeTemplateDefinition:
         assert not forward_ref_registry
         assert (
             IRanOutOfFooLikeNames
-            in retval._templatey_signature._slot_tree_lookup)
+            in retval._templatey_signature._prerender_tree_lookup)
 
     def test_nested_forward_ref_works(self):
         """Slots must be definable using forward references, and these
         forward references must be recorded on the template alongside
-        the rest of the slot tree.
+        the rest of the prerender tree.
 
         Once the reference is available, it must be resolved on the
         forward-referencing class.
@@ -315,7 +315,7 @@ class TestMakeTemplateDefinition:
 
         assert len(retval._templatey_signature._pending_ref_lookup) == 0
         assert not forward_ref_registry
-        assert Foo in retval._templatey_signature._slot_tree_lookup
+        assert Foo in retval._templatey_signature._prerender_tree_lookup
 
     def test_simple_recursion_works(self):
         """Slots must support recursive references back to the current
@@ -338,7 +338,7 @@ class TestMakeTemplateDefinition:
         assert len(retval._templatey_signature._pending_ref_lookup) == 0
         forward_ref_registry = PENDING_FORWARD_REFS.get()
         assert not forward_ref_registry
-        assert Foo in retval._templatey_signature._slot_tree_lookup
+        assert Foo in retval._templatey_signature._prerender_tree_lookup
 
     def test_recursion_loop_works(self):
         """Slots must support recursive reference loops back to the
@@ -382,8 +382,8 @@ class TestMakeTemplateDefinition:
         assert not forward_ref_registry
         assert len(retval._templatey_signature._pending_ref_lookup) == 0
         assert not forward_ref_registry
-        assert Foo in foo_xable._templatey_signature._slot_tree_lookup
-        assert Foo in retval._templatey_signature._slot_tree_lookup
+        assert Foo in foo_xable._templatey_signature._prerender_tree_lookup
+        assert Foo in retval._templatey_signature._prerender_tree_lookup
 
     def test_config_and_locator_assigned(self):
         """The passed template config must be stored on the class, along
@@ -459,7 +459,7 @@ class TestMakeTemplateDefinition:
 
     def test_slot_multiples_union(self):
         """Templates with multiple slots of the same union type must be
-        correctly defined, with both separate routes in the slot tree.
+        correctly defined, with both separate routes in the prerender tree.
         """
         class FakeTemplate:
             foo1: Slot[Foo | Bar | Baz]
@@ -489,7 +489,7 @@ class TestMakeTemplateDefinition:
         assert len(signature.slot_names) == 2
         assert 'foo1' in signature.slot_names
         assert 'foo2' in signature.slot_names
-        root_node = signature._slot_tree_lookup[Foo]
+        root_node = signature._prerender_tree_lookup[Foo]
         assert root_node.has_route_for('foo1', Foo)
         assert root_node.has_route_for('foo2', Foo)
 
@@ -527,16 +527,16 @@ class TestMakeTemplateDefinition:
 
         assert signature_backref.slot_names == {'slot1', 'slot2'}
         assert signature_fordref.slot_names == {'slot1', 'slot2'}
-        assert set(signature_backref._slot_tree_lookup) == {Foo, Bar, Baz}
-        assert set(signature_fordref._slot_tree_lookup) == {Foo, Bar, Baz}
+        assert set(signature_backref._prerender_tree_lookup) == {Foo, Bar, Baz}
+        assert set(signature_fordref._prerender_tree_lookup) == {Foo, Bar, Baz}
         assert not signature_backref._pending_ref_lookup
         assert not signature_fordref._pending_ref_lookup
 
         # Hard-coding the expected tree is a LOT of tedious manual work, so
         # instead we're just going to be as pragmatic as possible and just
         # test backref against forward-ref
-        foo_root_backref = signature_backref._slot_tree_lookup[Foo]
-        foo_root_fordref = signature_fordref._slot_tree_lookup[Foo]
+        foo_root_backref = signature_backref._prerender_tree_lookup[Foo]
+        foo_root_fordref = signature_fordref._prerender_tree_lookup[Foo]
         assert foo_root_backref.is_equivalent(foo_root_fordref)
         assert {slot.slot_path for slot in foo_root_backref} == {
             ('slot1', Foo),
@@ -544,8 +544,8 @@ class TestMakeTemplateDefinition:
             ('slot2', Foo),
             ('slot2', Bar),}
 
-        bar_root_backref = signature_backref._slot_tree_lookup[Bar]
-        bar_root_fordref = signature_fordref._slot_tree_lookup[Bar]
+        bar_root_backref = signature_backref._prerender_tree_lookup[Bar]
+        bar_root_fordref = signature_fordref._prerender_tree_lookup[Bar]
         assert bar_root_backref.is_equivalent(bar_root_fordref)
         assert {slot.slot_path for slot in bar_root_backref} == {
             ('slot1', Foo),
@@ -553,8 +553,8 @@ class TestMakeTemplateDefinition:
             ('slot2', Foo),
             ('slot2', Bar),}
 
-        baz_root_backref = signature_backref._slot_tree_lookup[Baz]
-        baz_root_fordref = signature_fordref._slot_tree_lookup[Baz]
+        baz_root_backref = signature_backref._prerender_tree_lookup[Baz]
+        baz_root_fordref = signature_fordref._prerender_tree_lookup[Baz]
         assert baz_root_backref.is_equivalent(baz_root_fordref)
         assert {slot.slot_path for slot in baz_root_backref} == {
             ('slot1', Foo),
@@ -688,8 +688,8 @@ class TestMakeTemplateDefinition:
         assert len(signature.dynamic_class_slot_names) == 1
         assert 'bar' in signature.dynamic_class_slot_names
 
-        assert len(signature._dynamic_class_slot_tree) == 0
-        assert signature._dynamic_class_slot_tree.dynamic_class_slot_names == {
+        assert len(signature._dynamic_class_prerender_tree) == 0
+        assert signature._dynamic_class_prerender_tree.dynamic_class_slot_names == {
             'bar'}
 
     def test_dynamic_class_slot_extraction_recursion_loop(self):
@@ -732,8 +732,8 @@ class TestMakeTemplateDefinition:
 
         # Hard-coding the expected tree is a LOT of tedious manual work, so
         # instead we're just going to be as pragmatic as possible
-        dycls_root_backref = signature_backref._dynamic_class_slot_tree
-        dycls_root_fordref = signature_fordref._dynamic_class_slot_tree
+        dycls_root_backref = signature_backref._dynamic_class_prerender_tree
+        dycls_root_fordref = signature_fordref._dynamic_class_prerender_tree
         assert dycls_root_backref.is_equivalent(dycls_root_fordref)
         assert {slot.slot_path for slot in dycls_root_backref} == {
             ('slot1', Foo),
