@@ -33,3 +33,27 @@ class ErrorCollector(list[Exception]):
             raise ExceptionGroup(
                 'Max number of collected errors exceeded!',
                 self)
+
+
+def capture_traceback[E: Exception](
+        exc: E,
+        from_exc: Exception | None = None) -> E:
+    """This is a little bit hacky, but it allows us to capture the
+    traceback of the exception we want to "raise" but then collect into
+    an ExceptionGroup at the end of the rendering cycle. It does pollute
+    the traceback with one extra stack level, but the important thing
+    is to capture the upstream context for the error, and that it will
+    do just fine.
+
+    There's almost certainly a better way of doing this, probably using
+    traceback from the stdlib. But this is quicker to code, and that's
+    my current priority. Gracefulness can come later!
+    """
+    try:
+        if from_exc is None:
+            raise exc
+        else:
+            raise exc from from_exc
+
+    except type(exc) as exc_with_traceback:
+        return exc_with_traceback

@@ -14,7 +14,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import fields
+from dataclasses import replace as dc_replace
 from functools import singledispatch
+from itertools import count
 from typing import Annotated
 from typing import Any
 from typing import cast
@@ -26,6 +28,8 @@ from templatey.exceptions import InvalidTemplateInterpolation
 from templatey.interpolators import NamedInterpolator
 from templatey.interpolators import transform_unicode_control
 from templatey.interpolators import untransform_unicode_control
+from templatey.modifiers import EnvFuncInvocationRef
+from templatey.modifiers import SegmentModifier
 
 _SLOT_MATCHER = re.compile(r'^\s*slot\.([A-z_][A-z0-9_]*)\s*$')
 _CONTENT_MATCHER = re.compile(r'^\s*content\.([A-z_][A-z0-9_]*)\s*$')
@@ -34,6 +38,13 @@ _FUNC_MATCHER = re.compile(r'^\s*@([A-z_][A-z0-9_]*)\(([^\)]*)\)\s*$')
 _COMMENT_MATCHER = re.compile(r'^\s*#.*$')
 logger = logging.getLogger(__name__)
 
+type TemplateSegment = (
+    LiteralTemplateString
+    | InterpolatedSlot
+    | InterpolatedContent
+    | InterpolatedVariable
+    | InterpolatedFunctionCall)
+
 
 @dataclass(frozen=True, slots=True)
 class ParsedTemplateResource:
@@ -41,12 +52,7 @@ class ParsedTemplateResource:
     information about which references the template had, for use later
     when validating the template (within some render context).
     """
-    parts: tuple[
-        LiteralTemplateString
-        | InterpolatedSlot
-        | InterpolatedContent
-        | InterpolatedVariable
-        | InterpolatedFunctionCall, ...]
+    parts: tuple[TemplateSegment, ...]
     variable_names: frozenset[str]
     content_names: frozenset[str]
     slot_names: frozenset[str]
@@ -71,12 +77,7 @@ class ParsedTemplateResource:
     @classmethod
     def from_parts(
             cls,
-            parts: Sequence[
-                LiteralTemplateString
-                | InterpolatedSlot
-                | InterpolatedContent
-                | InterpolatedVariable
-                | InterpolatedFunctionCall,]
+            parts: Sequence[TemplateSegment]
             ) -> ParsedTemplateResource:
         if not isinstance(parts, tuple):
             parts = tuple(parts)
@@ -267,17 +268,110 @@ _VALID_NESTED_REFS = {
 
 def parse(
         template_str: str,
-        interpolator: NamedInterpolator
+        interpolator: NamedInterpolator,
+        segment_modifiers: Sequence[SegmentModifier],
         ) -> ParsedTemplateResource:
+    """Parses the template string with the passed interpolator and
+    applies the desired segment modifiers.
+    """
     if interpolator is NamedInterpolator.UNICODE_CONTROL:
         do_untransform = True
         template_str = transform_unicode_control(template_str)
     else:
         do_untransform = False
 
-    parts = tuple(
-        _wrap_formatter_parse(template_str, do_untransform=do_untransform))
+    part_index_counter = count()
+    parts: list[TemplateSegment] = []
+    for premodification_segment in _wrap_formatter_parse(
+        template_str, do_untransform=do_untransform
+    ):
+        parts.extend(_apply_segment_modifiers(
+            premodification_segment,
+            segment_modifiers,
+            part_index_counter))
     return ParsedTemplateResource.from_parts(parts)
+
+
+def _apply_segment_modifiers(
+        unmodified_part: TemplateSegment,
+        segment_modifiers: Sequence[SegmentModifier],
+        part_index_counter: count,
+        ) -> Iterator[TemplateSegment]:
+    """As the name suggests, this takes an unmodified part and applies
+    any desired segment modifiers. Note that this can grow or contract
+    the total number of segments.
+    """
+    # The combinatorics here are gross, but this only runs once per
+    # template load, and not once per render, so at least there's
+    # that.
+    if isinstance(unmodified_part, str):
+        for modifier in segment_modifiers:
+            had_matches, after_mods = modifier.apply_and_flatten(
+                unmodified_part)
+
+            if had_matches:
+                yield from (
+                    _coerce_modified_segment(
+                        modified_segment, part_index_counter)
+                    for modified_segment in after_mods)
+                break
+
+        else:
+            # We still want to create a copy here, in case the
+            # template loader is doing its own caching beyond what
+            # we do within the env
+            yield LiteralTemplateString(
+                unmodified_part,
+                part_index=next(part_index_counter))
+
+    else:
+        yield dc_replace(
+            unmodified_part,
+            part_index=next(part_index_counter))
+
+
+def _coerce_modified_segment(
+        modified_segment:
+            str
+            | EnvFuncInvocationRef
+            | TemplateInstanceContentRef
+            | TemplateInstanceVariableRef,
+        part_index_counter: count,
+            ) -> (
+                LiteralTemplateString
+                | InterpolatedContent
+                | InterpolatedVariable
+                | InterpolatedFunctionCall):
+    """Converts the result of segment modification into an actual
+    parsed template resource part, including a part index.
+    """
+    if isinstance(modified_segment, str):
+        return LiteralTemplateString(
+            modified_segment, part_index=next(part_index_counter))
+
+    elif isinstance(modified_segment, EnvFuncInvocationRef):
+        return InterpolatedFunctionCall(
+            part_index=next(part_index_counter),
+            name=modified_segment.name,
+            call_args=modified_segment.call_args,
+            call_args_exp=None,
+            call_kwargs=modified_segment.call_kwargs,
+            call_kwargs_exp=None)
+
+    elif isinstance(modified_segment, TemplateInstanceContentRef):
+        return InterpolatedContent(
+            part_index=next(part_index_counter),
+            name=modified_segment.name,
+            config=InterpolationConfig())
+
+    elif isinstance(modified_segment, TemplateInstanceVariableRef):
+        return InterpolatedVariable(
+            part_index=next(part_index_counter),
+            name=modified_segment.name,
+            config=InterpolationConfig())
+
+    else:
+        raise TypeError('Unknown modified segment type!', modified_segment)
 
 
 def _extract_nested_refs(
@@ -326,14 +420,7 @@ def _extract_nested_refs(
 def _wrap_formatter_parse(
         formattable_template_str: str,
         do_untransform=False
-        ) -> Generator[
-            LiteralTemplateString
-                | InterpolatedSlot
-                | InterpolatedContent
-                | InterpolatedVariable
-                | InterpolatedFunctionCall,
-            None,
-            None]:
+        ) -> Generator[TemplateSegment, None, None]:
     """A generator. Wraps the very weird API provided by
     string.Formatter.parse, instead yielding either:
     ++  literal text, in string format

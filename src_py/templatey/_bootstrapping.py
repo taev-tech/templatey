@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import ClassVar
 from typing import cast
 
+from templatey._fields import NormalizedFieldset
 from templatey._types import TemplateIntersectable
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolationConfig
@@ -38,3 +39,5 @@ PARSED_EMPTY_TEMPLATE = ParsedTemplateResource(
 EMPTY_TEMPLATE_XABLE = cast(type[TemplateIntersectable], EmptyTemplate)
 EMPTY_TEMPLATE_INSTANCE = EmptyTemplate()
 EMPTY_INTERPOLATION_CONFIG = InterpolationConfig()
+EMPTY_TEMPLATE_XABLE._templatey_signature.fieldset = \
+    NormalizedFieldset.from_template_cls(EmptyTemplate)

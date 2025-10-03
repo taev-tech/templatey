@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import typing
-from collections import defaultdict
 from collections import namedtuple
-from collections.abc import Iterable
 from collections.abc import Iterator
 from dataclasses import Field
 from dataclasses import dataclass
@@ -18,27 +16,15 @@ from typing import cast
 from typing import get_args as get_type_args
 from typing import get_origin as get_type_origin
 from typing import get_type_hints
-from weakref import ref
 
-from templatey._provenance import Provenance
-from templatey._slot_tree import ConcretePrerenderTreeNode
-from templatey._slot_tree import DynamicClassPrerenderTreeNode
-from templatey._slot_tree import PrerenderTreeNode
-from templatey._slot_tree import PrerenderTreeRoute
-from templatey._slot_tree import gather_dynamic_class_slots
-from templatey._slot_tree import merge_into_prerender_tree
-from templatey._slot_tree import update_encloser_with_trees_from_slot
-from templatey._types import DYNAMIC_TEMPLATE_CLASS
 from templatey._types import Content
 from templatey._types import DynamicClassSlot
 from templatey._types import InterfaceAnnotationFlavor
 from templatey._types import Slot
 from templatey._types import TemplateClass
-from templatey._types import TemplateInstanceID
-from templatey._types import TemplateIntersectable
-from templatey._types import TemplateParamsInstance
 from templatey._types import Var
 from templatey.templates import FieldConfig
+from templatey.templates import get_closure_locals
 
 if typing.TYPE_CHECKING:
     from templatey._slot_tree import SlotPath
@@ -90,13 +76,20 @@ class NormalizedFieldset:
         self.dynamic_class_slot_names = frozenset(
             field.name for field in self.dynamic_slots)
 
+    # The noqa here is because of too many branches (because we're normalizing
+    # stuff, basically)
     @classmethod
-    def from_template_cls(
+    def from_template_cls(  # noqa: PLR0912
             cls,
             template_cls: TemplateClass
             ) -> NormalizedFieldset:
+        closure_locals = get_closure_locals(template_cls)
         try:
-            template_type_hints = get_type_hints(template_cls)
+            if closure_locals is None:
+                template_type_hints = get_type_hints(template_cls)
+            else:
+                template_type_hints = get_type_hints(
+                    template_cls, localns=closure_locals)
         except NameError as exc:
             exc.add_note(dedent('''\
                 Failed to resolve type hints on template. This is either the
@@ -153,8 +146,6 @@ class NormalizedFieldset:
 
                 elif InterfaceAnnotationFlavor.SLOT in field_flavors:
                     if InterfaceAnnotationFlavor.DYNAMIC in field_flavors:
-                        slotpaths.add(
-                            (template_field.name, DYNAMIC_TEMPLATE_CLASS))
                         dynamic_slots.append(normfield)
 
                     else:

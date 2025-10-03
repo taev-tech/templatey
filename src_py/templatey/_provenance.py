@@ -1,16 +1,25 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable
+from collections.abc import Mapping
 from dataclasses import KW_ONLY
 from dataclasses import dataclass
 from dataclasses import field
+from functools import partialmethod
+from functools import singledispatch
+from typing import Any
+from typing import cast
+from typing import overload
 
-from templatey._slot_tree import PrerenderTreeNode
+from templatey._error_collector import ErrorCollector
+from templatey._error_collector import capture_traceback
 from templatey._types import TemplateClass
 from templatey._types import TemplateInstanceID
 from templatey._types import TemplateParamsInstance
+from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import ParsedTemplateResource
 from templatey.parser import TemplateInstanceContentRef
+from templatey.parser import TemplateInstanceDataRef
 from templatey.parser import TemplateInstanceVariableRef
 
 
@@ -62,218 +71,152 @@ class Provenance:
             (*self.slotpath, node_to_append),
             from_injection=self.from_injection)
 
-    def bind_content(
+    def bind_call_signature(
+            self,
+            abstract_call: InterpolatedFunctionCall,
+            template_preload: dict[TemplateClass, ParsedTemplateResource],
+            error_collector: ErrorCollector,
+            ) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        """Given a passed abstract call signature, extracts and
+        finalizes the correct *args and **kwargs for its execution
+        request.
+        """
+        # Note that the full call signature is **defined**
+        # within the parsed template body, but it may
+        # **reference** vars and/or content within the template
+        # instance.
+        try:
+            args = _recursively_coerce_func_execution_params(
+                abstract_call.call_args,
+                provenance=self,
+                template_preload=template_preload,
+                error_collector=error_collector)
+            kwargs = _recursively_coerce_func_execution_params(
+                abstract_call.call_kwargs,
+                provenance=self,
+                template_preload=template_preload,
+                error_collector=error_collector)
+
+            if abstract_call.call_args_exp is None:
+                # hmm, I actually don't think this is possible, but we'd need
+                # to fix some typing on
+                # _recursively_coerce_func_execution_params to know for sure
+                if not isinstance(args, tuple):
+                    args = tuple(args)
+
+            else:
+                args = (*args, *cast(
+                    Iterable[Any],
+                    _recursively_coerce_func_execution_params(
+                        abstract_call.call_args_exp,
+                        provenance=self,
+                        template_preload=template_preload,
+                        error_collector=error_collector)))
+
+            if abstract_call.call_kwargs_exp is not None:
+                kwargs.update(cast(
+                    Mapping[str, Any],
+                    _recursively_coerce_func_execution_params(
+                        abstract_call.call_kwargs_exp,
+                        provenance=self,
+                        template_preload=template_preload,
+                        error_collector=error_collector)))
+
+        except Exception as exc:
+            error_collector.append(exc)
+            # Doesn't matter what these are; they just need to be defined.
+            # The rest will get sorted out when we check for errors down the
+            # road.
+            args = ()
+            kwargs = {}
+
+        return args, kwargs
+
+    def _bind_param(
             self,
             name: str,
-            template_preload: dict[TemplateClass, ParsedTemplateResource]
+            template_preload: dict[TemplateClass, ParsedTemplateResource],
+            error_collector: ErrorCollector,
+            *,
+            _passthrough_reftype:
+                type[TemplateInstanceContentRef]
+                | type[TemplateInstanceVariableRef]
             ) -> object:
         """Use this to calculate a concrete value for use in rendering.
-        This walks up the provenance stack, recursively looking for any
-        overrides to the content. If none are found, it returns the
-        value from the childmost instance in the provenance.
+        We start from the template params instance, and then -- if the
+        value is missing -- we walk up the provenance stack until we
+        either find a value or reach the injection point.
         """
         slotpath = self.slotpath
+        current_provenance_node = slotpath[-1]
         # We use the literal ellipsis type as a sentinel for values not being
         # added yet, so we might as well just continue the trend!
-        current_provenance_node = slotpath[-1]
         value = getattr(current_provenance_node.instance, name, ...)
-        encloser_param_name = name
-        encloser_slot_key = current_provenance_node.encloser_slot_key
+
+        # Template params instances take precedence over values passed in via
+        # template text. In that case, we can simple short-circuit.
+        if value is not ...:
+            return value
+
+        # Otherwise, things get a bit weird. Each level in the provenance can
+        # reference a value from the parent, but under a different name. So
+        # we need to do some remapping as we walk things back.
+        param_name = name
+        slot_key = current_provenance_node.encloser_slot_key
         for encloser in reversed(slotpath[0:-1]):
-            template_class = type(encloser.instance)
+            enclosing_template_cls = type(encloser.instance)
             # We do this so that env funcs that inject templates don't try
-            # to continue looking up the provenance tree for slots that don't
-            # actually exist.
-            if hasattr(template_class, '_TEMPLATEY_EMPTY_INSTANCE'):
+            # to continue looking up the provenance tree for slots that
+            # don't actually exist.
+            if hasattr(enclosing_template_cls, '_TEMPLATEY_EMPTY_INSTANCE'):
                 break
 
-            encloser_template = template_preload[template_class]
-            encloser_overrides = (
-                encloser_template.slots[encloser_slot_key].params)
+            params_from_encloser = (
+                template_preload[enclosing_template_cls]
+                .slots[slot_key]
+                .params)
+            value_from_encloser = params_from_encloser.get(param_name, ...)
 
-            if encloser_param_name in encloser_overrides:
-                value = encloser_overrides[encloser_param_name]
+            # If the value in the enclosure was itself a reference to a
+            # parameter passed to it, we then need to check one level up.
+            if isinstance(value_from_encloser, _passthrough_reftype):
+                # First, prep the next iteration, in case we need one.
+                slot_key = encloser.encloser_slot_key
+                param_name = value_from_encloser.name
+                # Now, update the value from the enclosure, in case we don't
+                # need a next iteration. Note that we use the NEW param name
+                # here!
+                value = getattr(encloser.instance, param_name, ...)
 
-                if isinstance(value, TemplateInstanceContentRef):
-                    encloser_slot_key = encloser.encloser_slot_key
-                    encloser_param_name = value.name
-                    value = ...
-                else:
-                    break
+            # This might be a missing value still (the ellipsis), or an
+            # explicit literal value from the template body. Either way, we'll
+            # check in a second.
             else:
+                value = value_from_encloser
+
+            # Case 1: ``value is not ...`` -- this means we found a value, and
+            # we need to stop searching.
+            # Case 2: ``value is ... and value_from_encloser is ...`` -- this
+            # means there was no explicit literal value, and also no indirect
+            # value to check in the next enclosure. We can't continue the
+            # search; no value was found.
+            if value is not ... or value_from_encloser is ...:
                 break
 
         if value is ...:
-            raise KeyError(
-                'No value found for content with name at slot!',
-                slotpath[-1].instance, name)
+            error_collector.append(capture_traceback(
+                KeyError(
+                    'No param value found with matching type (content vs '
+                    + 'variable) on template instance or text!',
+                    slotpath[-1].instance, name)))
+            value = ''
 
         return value
 
-    def bind_variable(
-            self,
-            name: str,
-            template_preload: dict[TemplateClass, ParsedTemplateResource]
-            ) -> object:
-        """Use this to calculate a concrete value for use in rendering.
-        This walks up the provenance stack, recursively looking for any
-        overrides to the variable. If none are found, it returns the
-        value from the childmost instance in the provenance.
-        """
-        slotpath = self.slotpath
-        # We use the literal ellipsis type as a sentinel for values not being
-        # added yet, so we might as well just continue the trend!
-        current_provenance_node = slotpath[-1]
-        value = getattr(current_provenance_node.instance, name, ...)
-        encloser_param_name = name
-        encloser_slot_key = current_provenance_node.encloser_slot_key
-        for encloser in reversed(slotpath[0:-1]):
-            template_class = type(encloser.instance)
-            # We do this so that env funcs that inject templates don't try
-            # to continue looking up the provenance tree for slots that don't
-            # actually exist.
-            if hasattr(template_class, '_TEMPLATEY_EMPTY_INSTANCE'):
-                break
-
-            encloser_template = template_preload[template_class]
-            encloser_overrides = (
-                encloser_template.slots[encloser_slot_key].params)
-
-            if encloser_param_name in encloser_overrides:
-                value = encloser_overrides[encloser_param_name]
-
-                if isinstance(value, TemplateInstanceVariableRef):
-                    encloser_slot_key = encloser.encloser_slot_key
-                    encloser_param_name = value.name
-                    value = ...
-                else:
-                    break
-            else:
-                break
-
-        if value is ...:
-            raise KeyError(
-                'No value found for variable with name at slot!',
-                slotpath[-1].instance, name)
-
-        return value
-
-    @classmethod
-    def from_prerender_tree(
-            cls,
-            root_template_instance: TemplateParamsInstance,
-            root_prerender_tree: PrerenderTreeNode,
-            from_injection: Provenance | None,
-            ) -> list[Provenance]:
-        """Given a root template instance, walks the passed prerender tree,
-        finding all terminus points. Returns them as a list of
-        provenance instances.
-
-        Note that you must choose the correct prerender tree from the
-        prerender tree lookup in advance; this simply converts prerender tree
-        terminus points into provenances based on a root template
-        instance: no more, no less.
-
-        TODO: it would be nice if we could pre-merge the prerender trees during
-        template loading for the actual use cases (env functions invocations
-        and, eventually, dynamic slot types) so that we didn't need a separate
-        tree traversal for every template class. But for now, this is good
-        enough
-        """
-        provenances: list[Provenance] = []
-        stack: list[_TreeFlattenerFrame] = [
-            _TreeFlattenerFrame(
-                active_instance=root_template_instance,
-                active_subtree=root_prerender_tree,
-                target_subtree_index=0,
-                target_instance_index=0,
-                wip_provenance=Provenance(
-                    (
-                        ProvenanceNode(
-                            encloser_slot_key='',
-                            encloser_slot_index=-1,
-                            instance_id=id(root_template_instance),
-                            instance=root_template_instance),),
-                    from_injection=from_injection))]
-
-        while stack:
-            this_frame = stack[-1]
-            if this_frame.exhausted:
-                stack.pop()
-
-                if this_frame.active_subtree.is_terminus:
-                    provenances.append(this_frame.wip_provenance)
-
-                continue
-
-            this_slot_route = this_frame.active_subtree[
-                this_frame.target_subtree_index]
-            this_slot_name, this_slot_type, this_subtree = this_slot_route
-            target_instance_index = this_frame.target_instance_index
-
-            # This is, in a way, a nested stack, but we're maintaining
-            # the stack state within the _TreeFlattenerFrame.
-            # At any rate, we use the zero-index iteration of the loop
-            # to memoize some values on the stack frame.
-            if target_instance_index == 0:
-                target_instances = getattr(
-                    this_frame.active_instance,
-                    this_slot_name)
-                target_instances_count = len(target_instances)
-
-                # Check in advance if there are no target instances at all,
-                # and if so, skip the whole thing. This isn't just for
-                # performance; the processing logic depends on it.
-                if target_instances_count > 0:
-                    this_frame.target_instances_count = target_instances_count
-                    this_frame.target_instances = target_instances
-                else:
-                    # Note: this is critical! Otherwise we'll infinitely loop.
-                    this_frame.target_subtree_index += 1
-                    continue
-
-            else:
-                target_instances_count = this_frame.target_instances_count
-                # We've exhausted the target instances; reset the state for
-                # the next prerender tree route and then continue.
-                if this_frame.target_instance_index >= target_instances_count:
-                    # Note: we're deliberately skipping the target instances
-                    # themselves, because it'll just get overwritten the next
-                    # time around, so we can save ourselves an operation.
-                    this_frame.target_instances_count = 0
-                    this_frame.target_instance_index = 0
-                    # Note: this is critical! Otherwise we'll infinitely loop.
-                    this_frame.target_subtree_index += 1
-                    continue
-
-                # We still have some instances to target; normalize the state
-                # so that we can operate on them.
-                target_instances = this_frame.target_instances
-
-            # Okay, status check: we have our stack frame state configured
-            # correctly, and we have target instances to check.
-            instance_to_check = target_instances[target_instance_index]
-            # Note: exact match here; not subclassing! Subclassing breaks too
-            # many things, so we don't support it.
-            if type(instance_to_check) is this_slot_type:
-                stack.append(_TreeFlattenerFrame(
-                    active_instance=instance_to_check,
-                    active_subtree=this_subtree,
-                    target_subtree_index=0,
-                    target_instance_index=0,
-                    wip_provenance=Provenance(
-                        (
-                            *this_frame.wip_provenance.slotpath,
-                            ProvenanceNode(
-                                encloser_slot_key=this_slot_name,
-                                encloser_slot_index=target_instance_index,
-                                instance_id=id(instance_to_check),
-                                instance=instance_to_check)),
-                        from_injection=from_injection)))
-
-            this_frame.target_instance_index += 1
-
-        return provenances
+    bind_content = partialmethod(
+        _bind_param, _passthrough_reftype=TemplateInstanceContentRef)
+    bind_variable = partialmethod(
+        _bind_param, _passthrough_reftype=TemplateInstanceVariableRef)
 
     def __hash__(self) -> int:
         memoized = self._hash
@@ -286,24 +229,164 @@ class Provenance:
             return memoized
 
 
-@dataclass(slots=True)
-class _TreeFlattenerFrame:
+@overload
+def _recursively_coerce_func_execution_params(
+        param_value: str,
+        *,
+        provenance: Provenance,
+        template_preload: dict[TemplateClass, ParsedTemplateResource],
+        error_collector: ErrorCollector,
+        ) -> str: ...
+@overload
+def _recursively_coerce_func_execution_params[K: object, V: object](
+        param_value: Mapping[K, V],
+        *,
+        provenance: Provenance,
+        template_preload: dict[TemplateClass, ParsedTemplateResource],
+        error_collector: ErrorCollector,
+        ) -> dict[K, V]: ...
+@overload
+def _recursively_coerce_func_execution_params[T: object](
+        param_value: list[T] | tuple[T],
+        *,
+        provenance: Provenance,
+        template_preload: dict[TemplateClass, ParsedTemplateResource],
+        error_collector: ErrorCollector,
+        ) -> tuple[T]: ...
+@overload
+def _recursively_coerce_func_execution_params(
+        param_value: TemplateInstanceContentRef | TemplateInstanceVariableRef,
+        *,
+        provenance: Provenance,
+        template_preload: dict[TemplateClass, ParsedTemplateResource],
+        error_collector: ErrorCollector,
+        ) -> object: ...
+@overload
+def _recursively_coerce_func_execution_params[T: object](
+        param_value: T,
+        *,
+        provenance: Provenance,
+        template_preload: dict[TemplateClass, ParsedTemplateResource],
+        error_collector: ErrorCollector,
+        ) -> T: ...
+@singledispatch
+def _recursively_coerce_func_execution_params(
+        # Note: singledispatch doesn't support type vars
+        param_value: object,
+        *,
+        provenance: Provenance,
+        template_preload: dict[TemplateClass, ParsedTemplateResource],
+        error_collector: ErrorCollector,
+        ) -> object:
+    """Templates support references to ``Content[...]``, ``Var[..]``,
+    and data attributes (normal dataclass fields) on their corresponding
+    template params instances as call args/kwargs for env functions.
+    This function is responsible for converting abstract references to
+    concrete values, using the template preload and the provenance.
+
+    Note that, since env function params can also be iterables (lists)
+    and mappings (dicts), we also need to recursively convert the
+    contents of containers.
     """
+    # Trivial case: plain object. Return it directly.
+    return param_value
+
+
+# Note: I think there might be a bug in pyright re: singledispatch vs overloads
+@_recursively_coerce_func_execution_params.register  # type: ignore
+def _(
+        # Note: singledispatch doesn't support type vars
+        param_value: list | tuple | dict,
+        *,
+        provenance: Provenance,
+        template_preload: dict[TemplateClass, ParsedTemplateResource],
+        error_collector: ErrorCollector,
+        ) -> tuple | dict:
+    """Again, in the container case, we want to create a new copy of
+    the container, replacing its values with the recursive call.
+    Note that the keys in nested dictionaries cannot be references,
+    only the values.
     """
-    active_instance: TemplateParamsInstance
-    active_subtree: PrerenderTreeNode
-    target_subtree_index: int
-    target_instance_index: int
-    target_instances_count: int = field(kw_only=True, default=0)
-    target_instances: Sequence[TemplateParamsInstance] = field(
-        kw_only=True, init=False)
-    wip_provenance: Provenance
+    if isinstance(param_value, dict):
+        return {
+            contained_key: _recursively_coerce_func_execution_params(
+                contained_value,
+                provenance=provenance,
+                template_preload=template_preload,
+                error_collector=error_collector)
+            for contained_key, contained_value in param_value.items()}
 
-    _active_subtree_len: int = field(init=False, repr=False, compare=False)
+    else:
+        return tuple(
+            _recursively_coerce_func_execution_params(
+                contained_value,
+                provenance=provenance,
+                template_preload=template_preload,
+                error_collector=error_collector)
+            for contained_value in param_value)
 
-    def __post_init__(self):
-        self._active_subtree_len = len(self.active_subtree)
 
-    @property
-    def exhausted(self) -> bool:
-        return self.target_subtree_index >= self._active_subtree_len
+# Note: I think there might be a bug in pyright re: singledispatch vs overloads
+@_recursively_coerce_func_execution_params.register  # type: ignore
+def _(
+        # Note: singledispatch doesn't support type vars
+        param_value: str,
+        *,
+        provenance: Provenance,
+        template_preload: dict[TemplateClass, ParsedTemplateResource],
+        error_collector: ErrorCollector,
+        ) -> str:
+    """We need to be careful here to supply a MORE SPECIFIC dispatch
+    type than container for strings, since they are technically also
+    containers. Bleh.
+    """
+    return param_value
+
+
+# Note: I think there might be a bug in pyright re: singledispatch vs overloads
+@_recursively_coerce_func_execution_params.register  # type: ignore
+def _(
+        param_value: TemplateInstanceContentRef,
+        *,
+        provenance: Provenance,
+        template_preload: dict[TemplateClass, ParsedTemplateResource],
+        error_collector: ErrorCollector,
+        ) -> object:
+    """Template content references need to be bound via the provenance.
+    """
+    return provenance.bind_content(
+        param_value.name,
+        template_preload,
+        error_collector)
+
+
+# Note: I think there might be a bug in pyright re: singledispatch vs overloads
+@_recursively_coerce_func_execution_params.register  # type: ignore
+def _(
+        param_value: TemplateInstanceVariableRef,
+        *,
+        provenance: Provenance,
+        template_preload: dict[TemplateClass, ParsedTemplateResource],
+        error_collector: ErrorCollector,
+        ) -> object:
+    """Template variable references need to be bound via the provenance.
+    """
+    return provenance.bind_variable(
+        param_value.name,
+        template_preload,
+        error_collector)
+
+
+# Note: I think there might be a bug in pyright re: singledispatch vs overloads
+@_recursively_coerce_func_execution_params.register  # type: ignore
+def _(
+        param_value: TemplateInstanceDataRef,
+        *,
+        provenance: Provenance,
+        template_preload: dict[TemplateClass, ParsedTemplateResource],
+        error_collector: ErrorCollector,
+        ) -> object:
+    """Data refs need to be retrieved from the template instance, which
+    is always the last member of the provenance slotpath.
+    """
+    return getattr(provenance.slotpath[-1].instance, param_value.name)

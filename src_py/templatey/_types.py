@@ -11,6 +11,7 @@ from typing import Annotated
 from typing import ClassVar
 from typing import Literal
 from typing import Protocol
+from typing import TypeGuard
 
 from docnote import ClcNote
 from typing_extensions import TypeIs
@@ -18,7 +19,7 @@ from typing_extensions import TypeIs
 if typing.TYPE_CHECKING:
     from _typeshed import DataclassInstance
 
-    from templatey._signature import TemplateSignature2
+    from templatey._signature import TemplateSignature
 else:
     DataclassInstance = object
 
@@ -163,7 +164,7 @@ type DynamicClassSlot[T: TemplateParamsInstance] = Annotated[
         ''')]
 
 
-def is_template_class(cls: type) -> TypeIs[type[TemplateIntersectable]]:
+def is_template_class_xable(cls: type) -> TypeIs[type[TemplateIntersectable]]:
     """Rather than relying upon @runtime_checkable, which doesn't work
     with protocols with ClassVars, we implement our own custom checker
     here for narrowing the type against TemplateIntersectable. Note
@@ -171,14 +172,12 @@ def is_template_class(cls: type) -> TypeIs[type[TemplateIntersectable]]:
     re: the missing intersection type in python, though support might be
     unreliable depending on which type checker is in use.
     """
-    return (
-        hasattr(cls, '_templatey_config')
-        and hasattr(cls, '_templatey_resource_locator')
-        and hasattr(cls, '_templatey_signature')
-    )
+    return hasattr(cls, '_templatey_signature')
 
 
-def is_template_instance(instance: object) -> TypeIs[TemplateIntersectable]:
+def is_template_instance_xable(
+        obj: object
+        ) -> TypeIs[TemplateIntersectable]:
     """Rather than relying upon @runtime_checkable, which doesn't work
     with protocols with ClassVars, we implement our own custom checker
     here for narrowing the type against TemplateIntersectable. Note
@@ -186,7 +185,19 @@ def is_template_instance(instance: object) -> TypeIs[TemplateIntersectable]:
     re: the missing intersection type in python, though support might be
     unreliable depending on which type checker is in use.
     """
-    return is_template_class(type(instance))
+    return is_template_class_xable(type(obj))
+
+
+def is_template_class(cls: type) -> TypeGuard[TemplateClass]:
+    """Like is_template_class_xable, but for the raw template class.
+    """
+    return isinstance(cls, type) and hasattr(cls, '_templatey_signature')
+
+
+def is_template_instance(obj: object) -> TypeGuard[TemplateParamsInstance]:
+    """Like is_template_instance_xable, but for the raw template class.
+    """
+    return (not isinstance(obj, type)) and hasattr(obj, '_templatey_signature')
 
 
 class TemplateIntersectable(Protocol):
@@ -196,7 +207,7 @@ class TemplateIntersectable(Protocol):
 
     Partly here for documentation, partly for use in ``cast`` calls.
     """
-    _templatey_signature: ClassVar[TemplateSignature2]
+    _templatey_signature: ClassVar[TemplateSignature]
 
 
 # Note: we don't need cryptographically secure IDs here, so let's preserve

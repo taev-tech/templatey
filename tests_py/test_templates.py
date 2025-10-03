@@ -16,8 +16,8 @@ from templatey._types import DynamicClassSlot
 from templatey._types import Slot
 from templatey._types import TemplateIntersectable
 from templatey._types import Var
-from templatey._types import is_template_class
-from templatey._types import is_template_instance
+from templatey._types import is_template_class_xable
+from templatey._types import is_template_instance_xable
 from templatey.templates import SegmentModifier
 from templatey.templates import make_template_definition
 from templatey.templates import template
@@ -39,13 +39,13 @@ class TestIsTemplateClass:
         ):
             setattr(FakeTemplate, key, object())
 
-        assert is_template_class(FakeTemplate)
+        assert is_template_class_xable(FakeTemplate)
 
     def test_negative(self):
         class FakeTemplate:
             ...
 
-        assert not is_template_class(FakeTemplate)
+        assert not is_template_class_xable(FakeTemplate)
 
 
 class TestIsTemplateInstance:
@@ -62,14 +62,14 @@ class TestIsTemplateInstance:
             setattr(FakeTemplate, key, object())
 
         instance = FakeTemplate()
-        assert is_template_instance(instance)
+        assert is_template_instance_xable(instance)
 
     def test_negative(self):
         class FakeTemplate:
             ...
         instance = FakeTemplate()
 
-        assert not is_template_instance(instance)
+        assert not is_template_instance_xable(instance)
 
 
 class TestTemplate:
@@ -85,7 +85,7 @@ class TestTemplate:
             ...
 
         assert isinstance(FakeTemplate, type)
-        assert is_template_class(FakeTemplate)
+        assert is_template_class_xable(FakeTemplate)
 
     def test_supports_passthrough(self):
         """Additional params must be passed through to the dataclass
@@ -118,7 +118,7 @@ class TestMakeTemplateDefinition:
             template_config=fake_template_config,
             segment_modifiers=[],
             explicit_loader=None)
-        assert is_template_class(retval)
+        assert is_template_class_xable(retval)
 
     def test_segment_modifiers_assigned(self):
         """Segment modifiers, if defined, must be added to the template
@@ -165,7 +165,7 @@ class TestMakeTemplateDefinition:
             template_config=fake_template_config,
             segment_modifiers=[],
             explicit_loader=None)
-        assert is_template_class(retval)
+        assert is_template_class_xable(retval)
 
     def test_forward_ref_works(self):
         """Slots must be definable using forward references, and these
@@ -185,7 +185,7 @@ class TestMakeTemplateDefinition:
             template_config=fake_template_config,
             segment_modifiers=[],
             explicit_loader=None))
-        assert is_template_class(retval)
+        assert is_template_class_xable(retval)
 
         assert len(retval._templatey_signature._pending_ref_lookup) == 1
         pending_ref = next(iter(
@@ -227,7 +227,7 @@ class TestMakeTemplateDefinition:
             template_config=fake_template_config,
             segment_modifiers=[],
             explicit_loader=None))
-        assert is_template_class(retval)
+        assert is_template_class_xable(retval)
 
         assert len(retval._templatey_signature._pending_ref_lookup) == 1
         pending_ref = next(iter(
@@ -297,7 +297,7 @@ class TestMakeTemplateDefinition:
             template_config=fake_template_config,
             segment_modifiers=[],
             explicit_loader=None))
-        assert is_template_class(retval)
+        assert is_template_class_xable(retval)
 
         assert len(retval._templatey_signature._pending_ref_lookup) == 1
         pending_ref = next(iter(
@@ -334,7 +334,7 @@ class TestMakeTemplateDefinition:
             template_config=fake_template_config,
             segment_modifiers=[],
             explicit_loader=None))
-        assert is_template_class(retval)
+        assert is_template_class_xable(retval)
         assert len(retval._templatey_signature._pending_ref_lookup) == 0
         forward_ref_registry = PENDING_FORWARD_REFS.get()
         assert not forward_ref_registry
@@ -359,7 +359,7 @@ class TestMakeTemplateDefinition:
             template_config=fake_template_config,
             segment_modifiers=[],
             explicit_loader=None))
-        assert is_template_class(retval)
+        assert is_template_class_xable(retval)
 
         assert len(retval._templatey_signature._pending_ref_lookup) == 1
         pending_ref = next(iter(

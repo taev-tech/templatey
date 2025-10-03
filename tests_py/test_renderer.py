@@ -7,6 +7,14 @@ import pytest
 
 from templatey._bootstrapping import EMPTY_TEMPLATE_INSTANCE
 from templatey._error_collector import ErrorCollector
+from templatey._renderer import FuncExecutionResult
+from templatey._renderer import _apply_format
+from templatey._renderer import capture_traceback
+from templatey._renderer import _coerce_injected_value
+from templatey._renderer import _ParamLookup
+from templatey._renderer import _recursively_coerce_func_execution_params
+from templatey._renderer import _RenderContext
+from templatey._renderer import render_driver
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import InterpolatedVariable
@@ -16,14 +24,6 @@ from templatey.parser import ParsedTemplateResource
 from templatey.parser import TemplateInstanceContentRef
 from templatey.parser import TemplateInstanceDataRef
 from templatey.parser import TemplateInstanceVariableRef
-from templatey.renderer import FuncExecutionResult
-from templatey.renderer import _apply_format
-from templatey.renderer import _capture_traceback
-from templatey.renderer import _coerce_injected_value
-from templatey.renderer import _ParamLookup
-from templatey.renderer import _recursively_coerce_func_execution_params
-from templatey.renderer import _RenderContext
-from templatey.renderer import render_driver
 from templatey.templates import InjectedValue
 from templatey.templates import TemplateConfig
 from templatey.templates import Var
@@ -146,7 +146,7 @@ class TestRenderDriver:
             side_effect=fake_prep_render,
             autospec=True,
         ), patch(
-            'templatey.renderer._get_precall_cache_key',
+            'templatey._renderer._get_precall_cache_key',
             autospec=True,
             return_value=fake_cache_key
         ):
@@ -480,7 +480,7 @@ class TestCaptureTraceback:
         exc = ZeroDivisionError('foo')
         assert exc.__traceback__ is None
         assert exc.__cause__ is None
-        re_exc = _capture_traceback(exc)
+        re_exc = capture_traceback(exc)
         assert re_exc is exc
         assert re_exc.__traceback__ is not None
         assert re_exc.__cause__ is None
@@ -493,14 +493,14 @@ class TestCaptureTraceback:
         context = ZeroDivisionError('bar')
         assert exc.__traceback__ is None
         assert exc.__cause__ is None
-        re_exc = _capture_traceback(exc, from_exc=context)
+        re_exc = capture_traceback(exc, from_exc=context)
         assert re_exc is exc
         assert re_exc.__traceback__ is not None
         assert re_exc.__cause__ is not None
 
 
 @patch(
-    'templatey.renderer._apply_format',
+    'templatey._renderer._apply_format',
     autospec=True,
     wraps=lambda raw_value, *_, **__: raw_value)
 class TestCoerceInjectedValue:

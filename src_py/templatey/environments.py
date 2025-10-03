@@ -1,11 +1,12 @@
 import inspect
+import typing
 from collections.abc import Awaitable
 from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Sequence
 from dataclasses import dataclass
-from dataclasses import replace as dc_replace
-from itertools import count
+from functools import partial
+from typing import Annotated
 from typing import Literal
 from typing import Optional
 from typing import Protocol
@@ -13,41 +14,37 @@ from typing import cast
 from typing import runtime_checkable
 
 try:
+    import anyio
     from anyio import create_task_group
 except ImportError:
-    pass
+    if typing.TYPE_CHECKING:
+        import anyio
+        from anyio import create_task_group
+from docnote import Note
 
 from templatey._bootstrapping import PARSED_EMPTY_TEMPLATE
 from templatey._bootstrapping import EmptyTemplate
 from templatey._error_collector import ErrorCollector
-from templatey._fields import NormalizedFieldset
-from templatey._fields import normalize_slot_annotations
-from templatey._signature import TemplateSignature2
-from templatey._slot_tree import build_slot_tree
-from templatey._types import DYNAMIC_TEMPLATE_CLASS
-from templatey._types import DynamicTemplateClass
+from templatey._finalizers import ensure_prerender_tree
+from templatey._finalizers import ensure_recursive_totality
+from templatey._finalizers import ensure_slot_tree
+from templatey._renderer import FuncExecutionRequest
+from templatey._renderer import FuncExecutionResult
+from templatey._renderer import PrecallCacheKey
+from templatey._renderer import RenderContext
+from templatey._renderer import TemplateInjection
+from templatey._renderer import render_driver
+from templatey._signature import TemplateSignature
 from templatey._types import TemplateClass
 from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
+from templatey._types import is_template_instance
 from templatey.exceptions import MismatchedRenderColor
 from templatey.exceptions import MismatchedTemplateEnvironment
 from templatey.exceptions import MismatchedTemplateSignature
 from templatey.exceptions import TemplateyException
-from templatey.parser import InterpolatedContent
-from templatey.parser import InterpolatedFunctionCall
-from templatey.parser import InterpolatedSlot
-from templatey.parser import InterpolatedVariable
-from templatey.parser import InterpolationConfig
-from templatey.parser import LiteralTemplateString
 from templatey.parser import ParsedTemplateResource
-from templatey.parser import TemplateInstanceContentRef
-from templatey.parser import TemplateInstanceVariableRef
 from templatey.parser import parse
-from templatey.renderer import FuncExecutionRequest
-from templatey.renderer import FuncExecutionResult
-from templatey.renderer import RenderEnvRequest
-from templatey.renderer import render_driver
-from templatey.templates import EnvFuncInvocationRef
 from templatey.templates import InjectedValue
 
 # Note: strings here will be escaped. InjectedValues may decide whether or not
@@ -170,165 +167,268 @@ class RenderEnvironment:
             template: type[TemplateParamsInstance],
             *,
             override_validation_strictness: None | bool = None,
-            force_reload: bool = False
+            force_reload: bool = False,
+            preload: Annotated[
+                    dict[TemplateClass, ParsedTemplateResource] | None,
+                    Note('''If desired, pass ``preload`` to recover all of the
+                        parsed template resources, including dependencies.
+
+                        If omitted, the dependent resources will still be
+                        loaded and cached, but there won't be any guarantees
+                        against them subsequently being evicted before the
+                        call to load returns.''')
+                ] = None
             ) -> ParsedTemplateResource:
         """Loads a template resource from a TemplateParamsInstance
         class. Caches it within the environment and returns the
         resulting ParsedTemplateResource.
 
         If force_reload is True, bypasses the cache.
+
+        Note that this will also load any and all other templates that
+        might be required (via nested slots) to render the passed
+        template. These will be cached, but not directly returned.
         """
-        template_xable = cast(type[TemplateIntersectable], template)
-        signature = template_xable._templatey_signature
-        explicit_loader = signature.explicit_loader
-        if explicit_loader is None:
-            if not self._can_load_async:
-                raise TypeError(
-                    'Current template loader does not support async loading')
-
-            template_loader = cast(AsyncTemplateLoader, self._template_loader)
-        else:
-            if not isinstance(explicit_loader, AsyncTemplateLoader):
-                raise TypeError(
-                    'Explicit template loader does not support async loading')
-
-            template_loader = explicit_loader
-
+        # Note: doing this first for thread safety in the sync case, preventing
+        # any new template functions from being registered.
+        self._has_loaded_any_template = True
+        # Note: in this case, we can bypass iterally everything.
         if template is EmptyTemplate:
+            await anyio.sleep(0)
             return PARSED_EMPTY_TEMPLATE
 
-        if (
-            not force_reload
-            and template in self._parsed_template_cache
-        ):
-            return self._parsed_template_cache[template]
-
-        template_text = await template_loader.load_async(
-            template,
-            signature.resource_locator)
-        return self._parse_and_cache(
-            template,
+        template_xable = cast(type[TemplateIntersectable], template)
+        signature = template_xable._templatey_signature
+        template_loader = self._get_loader(
             signature,
-            template_text,
-            override_validation_strictness)
+            self._can_load_async,
+            AsyncTemplateLoader)
+
+        # As the name suggests, this also recursively finalizes all inclusions.
+        ensure_recursive_totality(signature, template)
+
+        # Note that, because we need to potentially populate a preload, and
+        # not just the cache, we have to do this every time, even if the
+        # desired root template is already in the cache (because its
+        # requirements might not be).
+        # Three things:
+        # 1. we're prioritizing the case where preload is set, because that
+        #    happens during render calls, which need to be fast.
+        # 2. we're assuming that the total inclusions are significantly
+        #    smaller than the total template cache.
+        # 3. this isn't, strictly speaking, threadsafe, so if and when we add
+        #    support for finite caches, we'll need to wrap this into a lock.
+        #    Or something. It's not clear how this would work if someone wants
+        #    both sync and async loading at the same time.
+        required_loads: set[TemplateClass] = set()
+        target_resource: ParsedTemplateResource | None = None
+        if preload is None:
+            preload = {}
+
+        # This is cleaner than a difference, since we need to handle both the
+        # excluded and included cases if we have a preload
+        for included_template_cls in signature.total_inclusions:
+            if force_reload:
+                required_loads.add(included_template_cls)
+            elif (
+                from_cache := self._parsed_template_cache.get(
+                    included_template_cls)
+            ) is not None:
+                preload[included_template_cls] = from_cache
+                if included_template_cls is template:
+                    target_resource = from_cache
+            else:
+                required_loads.add(included_template_cls)
+
+        # We're doing this just in case everything was cached, and we never
+        # await a single loader.
+        await anyio.sleep(0)
+        for required_template_cls in required_loads:
+            requirement_signature = cast(
+                type[TemplateIntersectable], required_template_cls
+            )._templatey_signature
+
+            requirement_text = await template_loader.load_async(
+                required_template_cls,
+                requirement_signature.resource_locator)
+            parsed_requirement_template = self._parse_and_cache(
+                required_template_cls,
+                requirement_signature,
+                requirement_text,
+                override_validation_strictness)
+
+            preload[required_template_cls] = parsed_requirement_template
+            if required_template_cls is template:
+                target_resource = parsed_requirement_template
+
+            # Note that we have to do this on all of the requirements;
+            # otherwise, they'll be stored in the cache with an incomplete
+            # signature.
+            ensure_slot_tree(requirement_signature, required_template_cls)
+            ensure_prerender_tree(requirement_signature, preload)
+
+        if target_resource is None:
+            raise RuntimeError(
+                'Impossible branch: target template missing from load results',
+                template)
+
+        return target_resource
 
     def load_sync(
             self,
             template: type[TemplateParamsInstance],
             *,
             override_validation_strictness: None | bool = None,
-            force_reload: bool = False
+            force_reload: bool = False,
+            preload: Annotated[
+                    dict[TemplateClass, ParsedTemplateResource] | None,
+                    Note('''If desired, pass ``preload`` to recover all of the
+                        parsed template resources, including dependencies.
+
+                        If omitted, the dependent resources will still be
+                        loaded and cached, but there won't be any guarantees
+                        against them subsequently being evicted before the
+                        call to load returns.''')
+                ] = None
             ) -> ParsedTemplateResource:
         """Loads a template resource from a TemplateParamsInstance
         class. Caches it within the environment and returns the
         resulting ParsedTemplateResource.
 
         If force_reload is True, bypasses the cache.
+
+        Note that this will also load any and all other templates that
+        might be required (via nested slots) to render the passed
+        template. These will be cached, but not directly returned.
+
+        Note that cache operations here aren't threadsafe, but as long
+        as the underlying resource doesn't change, the worst case is
+        that we load and parse the same template resource multiple times
+        without calling force_reload. This is probably better than
+        wrapping the whole thing in a lock.
+
+        Also note that we're prioritizing speed here in the cached happy
+        case over technical correctness w.r.t. always raising if we
+        don't support this loading flavor.
         """
-        template_xable = cast(type[TemplateIntersectable], template)
-        signature = template_xable._templatey_signature
-        explicit_loader = signature.explicit_loader
-        if explicit_loader is None:
-            if not self._can_load_sync:
-                raise TypeError(
-                    'Current template loader does not support sync loading')
-
-            # The cast here is because it could be a sync and/or async loader,
-            # and the type system doesn't know we just verified that via
-            # _can_load_sync.
-            template_loader = cast(SyncTemplateLoader, self._template_loader)
-        else:
-            if not isinstance(explicit_loader, SyncTemplateLoader):
-                raise TypeError(
-                    'Explicit template loader does not support sync loading')
-            template_loader = explicit_loader
-
+        # Note: doing this first for thread safety in the sync case, preventing
+        # any new template functions from being registered.
+        self._has_loaded_any_template = True
+        # Note: in this case, we can bypass iterally everything.
         if template is EmptyTemplate:
             return PARSED_EMPTY_TEMPLATE
 
-        # Note that cache operations here aren't threadsafe, but as long as
-        # the underlying resource doesn't change, the worst case is that we
-        # load and parse the same template resource multiple times without
-        # calling force_reload. This is probably better than wrapping the
-        # whole thing in a lock.
-        if (
-            not force_reload
-            and template in self._parsed_template_cache
-        ):
-            return self._parsed_template_cache[template]
-
-        template_text = template_loader.load_sync(
-            template,
-            signature.resource_locator)
-        return self._parse_and_cache(
-            template,
+        template_xable = cast(type[TemplateIntersectable], template)
+        signature = template_xable._templatey_signature
+        template_loader = self._get_loader(
             signature,
-            template_text,
-            override_validation_strictness)
+            self._can_load_sync,
+            SyncTemplateLoader)
+
+        # As the name suggests, this also recursively finalizes all inclusions.
+        ensure_recursive_totality(signature, template)
+
+        # Note that, because we need to potentially populate a preload, and
+        # not just the cache, we have to do this every time, even if the
+        # desired root template is already in the cache (because its
+        # requirements might not be).
+        # Three things:
+        # 1. we're prioritizing the case where preload is set, because that
+        #    happens during render calls, which need to be fast.
+        # 2. we're assuming that the total inclusions are significantly
+        #    smaller than the total template cache.
+        # 3. this isn't, strictly speaking, threadsafe, so if and when we add
+        #    support for finite caches, we'll need to wrap this into a lock.
+        #    Or something. It's not clear how this would work if someone wants
+        #    both sync and async loading at the same time.
+        required_loads: set[TemplateClass] = set()
+        target_resource: ParsedTemplateResource | None = None
+        # Note that we need a preload to construct prerender trees regardless
+        # of whether or not the caller cares about it.
+        if preload is None:
+            preload = {}
+
+        # This is cleaner than a difference, since we need to handle both the
+        # excluded and included cases if we have a preload
+        for included_template_cls in signature.total_inclusions:
+            if force_reload:
+                required_loads.add(included_template_cls)
+            elif (
+                from_cache := self._parsed_template_cache.get(
+                    included_template_cls)
+            ) is not None:
+                preload[included_template_cls] = from_cache
+                if included_template_cls is template:
+                    target_resource = from_cache
+            else:
+                required_loads.add(included_template_cls)
+
+        for required_template_cls in required_loads:
+            requirement_signature = cast(
+                type[TemplateIntersectable], required_template_cls
+            )._templatey_signature
+            requirement_text = template_loader.load_sync(
+                required_template_cls,
+                requirement_signature.resource_locator)
+            parsed_requirement_template = self._parse_and_cache(
+                required_template_cls,
+                requirement_signature,
+                requirement_text,
+                override_validation_strictness)
+
+            preload[required_template_cls] = parsed_requirement_template
+            if required_template_cls is template:
+                target_resource = parsed_requirement_template
+
+            # Note that we have to do this on all of the requirements;
+            # otherwise, they'll be stored in the cache with an incomplete
+            # signature.
+            ensure_slot_tree(requirement_signature, required_template_cls)
+            ensure_prerender_tree(requirement_signature, preload)
+
+        if target_resource is None:
+            raise RuntimeError(
+                'Impossible branch: target template missing from load results',
+                template)
+        return target_resource
+
+    def _get_loader[T: AsyncTemplateLoader | SyncTemplateLoader](
+            self,
+            signature: TemplateSignature,
+            can_load_flavor: bool,
+            flavor_cls: type[T]
+            ) -> T:
+        explicit_loader = signature.explicit_loader
+        if explicit_loader is None:
+            if not can_load_flavor:
+                raise TypeError(
+                    'Environment template loader does not support current '
+                    + 'loading flavor (sync/async)', self._template_loader)
+
+            # The cast here is because it could be a sync and/or async loader,
+            # and the type system doesn't know we already verified that via
+            # _can_load_<sync|async>.
+            template_loader = cast(T, self._template_loader)
+        else:
+            if not isinstance(explicit_loader, flavor_cls):
+                raise TypeError(
+                    'Explicit template loader does not support current '
+                    + 'loading flavor (sync/async)', explicit_loader)
+            template_loader = explicit_loader
+
+        return template_loader
 
     def _parse_and_cache(
             self,
             template_cls: TemplateClass,
-            signature: TemplateSignature2,
+            signature: TemplateSignature,
             template_text: str,
             override_validation_strictness: None | bool
             ) -> ParsedTemplateResource:
-        # Note: doing this first for thread safety in the sync case
-        self._has_loaded_any_template = True
-
-        # We call these now (instead of, for example, during @template
-        # decoration time) because it maximizes the chances that all of the
-        # type hints are available (ie, no longer forward refs).
-        self._ensure_recursive_totality(template_cls, signature)
-        self._ensure_slot_tree(template_cls, signature)
-
-        template_config = signature.config
         parsed_template_resource = parse(
-            template_text, template_config.interpolator)
-        segment_modifiers = signature.segment_modifiers
-        part_index_counter = count()
-
-        parts_after_modification: list[
-            LiteralTemplateString
-            | InterpolatedSlot
-            | InterpolatedContent
-            | InterpolatedVariable
-            | InterpolatedFunctionCall] = []
-
-        for unmodified_part in parsed_template_resource.parts:
-            # The combinatorics here are gross, but this only runs once per
-            # template load, and not once per render, so at least there's
-            # that.
-            if isinstance(unmodified_part, str):
-                for modifier in segment_modifiers:
-                    had_matches, after_mods = modifier.apply_and_flatten(
-                        unmodified_part)
-
-                    if had_matches:
-                        parts_after_modification.extend(
-                            _coerce_modified_segment(
-                                modified_segment, part_index_counter)
-                            for modified_segment in after_mods)
-                        break
-
-                else:
-                    # We still want to create a copy here, in case the
-                    # template loader is doing its own caching beyond what
-                    # we do within the env
-                    parts_after_modification.append(
-                        LiteralTemplateString(
-                            unmodified_part,
-                            part_index=next(part_index_counter)))
-
-            else:
-                parts_after_modification.append(dc_replace(
-                    unmodified_part,
-                    part_index=next(part_index_counter)))
-
-        # Note: cannot just do dc_replace; we have a bunch more bookkeeping
-        # than that!
-        parsed_template_resource = ParsedTemplateResource.from_parts(
-            parts_after_modification)
+            template_text,
+            signature.parse_config.interpolator,
+            signature.segment_modifiers)
 
         if override_validation_strictness is None:
             strict_mode = self.strict_interpolation_validation
@@ -343,97 +443,6 @@ class RenderEnvironment:
 
         self._parsed_template_cache[template_cls] = parsed_template_resource
         return parsed_template_resource
-
-    def _ensure_recursive_totality(
-            self,
-            template_cls: TemplateClass,
-            signature: TemplateSignature2):
-        """This function constructs and populates the
-        ``signature.fieldset`` and ``signature.total_inclusions``
-        attributes if (and only if) either one of them is missing, and
-        then recursively does the same for all non-dynamic nested slot
-        classes.
-
-        This is helpful for several reasons:
-        ++  it makes sure that we have a full fieldset and descendant
-            classes for the entire descendancy tree, so that we can
-            construct a slot tree (and thereafter a prerender tree) for
-            the class
-        ++  if the attributes already exist, it does nothing, so we
-            don't waste work on nested template classes
-        ++  it allows parsed template resources to fall out of cache
-            without discarding the work we did processing the signature
-            itself
-        """
-        try:
-            if not hasattr(signature, 'fieldset'):
-                signature.fieldset = NormalizedFieldset.from_template_cls(
-                    template_cls)
-
-            if not hasattr(signature, 'total_inclusions'):
-                total_classes: set[TemplateClass] = {template_cls}
-
-                # Note that in addition to saving us work (both by deduping
-                # and by reusing the results from creating the fieldset),
-                # this also flattens unions, aliases, etc.
-                direct_inclusions: set[TemplateClass] = set()
-                for _, nested_slot_cls in signature.fieldset.slotpaths:
-                    # However, we do still need to drop out any dynamic
-                    # template class, since it (by definition) isn't an actual
-                    # slot!
-                    if nested_slot_cls is not DYNAMIC_TEMPLATE_CLASS:
-                        direct_inclusions.add(nested_slot_cls)
-
-                for nested_slot_cls in direct_inclusions:
-                    nested_signature = cast(
-                        type[TemplateIntersectable], nested_slot_cls
-                    )._templatey_signature
-                    self._ensure_recursive_totality(
-                        nested_slot_cls,
-                        nested_signature)
-                    # Note that this has to come after the recursive call,
-                    # because we depend upon its results!
-                    total_classes.update(
-                        nested_signature.total_inclusions)
-
-                signature.total_inclusions = frozenset(total_classes)
-
-        # So the logic here is that we want the fieldset and the total included
-        # classes to always be in sync, but we also don't want to always run
-        # the recursive check. So this helps us protect against errors
-        # resulting in the two attributes going out of sync without additional
-        # overhead.
-        # Note: I considered moving the total_inclusions into the
-        # fieldset, but it didn't really make sense there. In addition to the
-        # "it's just a weird place for it" feeling, _ensure_recursive_totality
-        # really belongs HERE, and it was creating awkward mutual recursion
-        # loops between ``NormalizedFieldset.from_template_cls`` and
-        # this.
-        except Exception:
-            try:
-                del signature.fieldset
-            except AttributeError:
-                pass
-            try:
-                del signature.total_inclusions
-            except AttributeError:
-                pass
-
-    def _ensure_slot_tree(
-            self,
-            template_cls: TemplateClass,
-            signature: TemplateSignature2):
-        """After ensuring recursive totality, call this to make sure
-        that the slot tree is defined on the template.
-        """
-        if not hasattr(signature, 'slot_tree'):
-            signature.slot_tree = build_slot_tree(template_cls)
-
-    def _ensure_prerender_tree(
-            self,
-            template_cls: TemplateClass,
-            signature: TemplateSignature2):
-            
 
     def _validate_env_functions(
             self,
@@ -477,7 +486,7 @@ class RenderEnvironment:
     def _validate_template_signature(
             self,
             template_class: TemplateClass,
-            signature: TemplateSignature2,
+            signature: TemplateSignature,
             parsed_template_resource: ParsedTemplateResource,
             *,
             strict_mode: bool
@@ -533,39 +542,59 @@ class RenderEnvironment:
             self,
             template_instance: TemplateParamsInstance
             ) -> str:
-        output = []
         error_collector = ErrorCollector()
-        for env_request in render_driver(
-            template_instance, output, error_collector
+        template_preload: dict[TemplateClass, ParsedTemplateResource] = {}
+        function_precall: dict[PrecallCacheKey, FuncExecutionResult] = {}
+
+        render_ctx = RenderContext(
+            template_preload=template_preload,
+            function_precall=function_precall,
+            error_collector=error_collector)
+        for env_request in render_ctx.prep_render(
+            template_instance,
+            error_collector
         ):
-            for to_load in env_request.to_load:
-                env_request.results_loaded[to_load] = self.load_sync(to_load)
+            for root_to_load in env_request.to_load:
+                # Note that this will already set the root_to_load within the
+                # preload dict.
+                self.load_sync(root_to_load, preload=template_preload)
 
             for to_execute in env_request.to_execute:
-                env_request.results_executed[to_execute.result_key] = (
-                    self._execute_env_function_sync(to_execute))
+                self._execute_env_function_sync(
+                    to_execute,
+                    env_request.injections,
+                    function_precall)
 
+        to_join = render_driver(template_instance, render_ctx)
         if error_collector:
             raise ExceptionGroup('Failed to render template', error_collector)
 
-        return ''.join(output)
+        return ''.join(to_join)
 
     def _execute_env_function_sync(
             self,
-            request: FuncExecutionRequest
-            ) -> FuncExecutionResult:
+            request: FuncExecutionRequest,
+            injections: list[TemplateInjection],
+            precall: dict[PrecallCacheKey, FuncExecutionResult]
+            ) -> None:
         try:
             container = self._env_functions[request.name]
             if container.is_async:
                 raise MismatchedRenderColor(
                     'Async env funcs cannot be used within render_sync!')
 
-            return FuncExecutionResult(
+            exe_result = container.function(*request.args, **request.kwargs)
+            precall[request.result_key] = FuncExecutionResult(
                 name=request.name,
-                retval=container.function(*request.args, **request.kwargs),
+                retval=exe_result,
                 exc=None)
+
+            for result_segment in exe_result:
+                if is_template_instance(result_segment):
+                    injections.append((request.provenance, result_segment))
+
         except Exception as exc:
-            return FuncExecutionResult(
+            precall[request.result_key] = FuncExecutionResult(
                 name=request.name,
                 retval=None,
                 exc=exc)
@@ -574,74 +603,67 @@ class RenderEnvironment:
             self,
             template_instance: TemplateParamsInstance
             ) -> str:
-        output = []
         error_collector = ErrorCollector()
-        for env_request in render_driver(
-            template_instance, output, error_collector
+        template_preload: dict[TemplateClass, ParsedTemplateResource] = {}
+        function_precall: dict[PrecallCacheKey, FuncExecutionResult] = {}
+
+        render_ctx = RenderContext(
+            template_preload=template_preload,
+            function_precall=function_precall,
+            error_collector=error_collector)
+
+        for env_request in render_ctx.prep_render(
+            template_instance,
+            error_collector
         ):
-            try:
-                # Ignoring the possibly unbound, because we're catching it
-                # below
-                async with create_task_group() as task_group:  # type: ignore
-                    for to_load in env_request.to_load:
-                        task_group.start_soon(
-                            self._wrap_load_async, env_request, to_load)
+            async with create_task_group() as task_group:
+                for root_to_load in env_request.to_load:
+                    # Note that this will already set the root_to_load within
+                    # the preload dict.
+                    task_group.start_soon(partial(
+                        self.load_async,
+                        root_to_load,
+                        preload=template_preload))
 
-                    for to_execute in env_request.to_execute:
-                        task_group.start_soon(
-                            self._wrap_execute_async, env_request, to_execute)
+                for to_execute in env_request.to_execute:
+                    task_group.start_soon(
+                        self._execute_env_function_async,
+                        to_execute,
+                        env_request.injections,
+                        function_precall)
 
-            except NameError as exc:
-                exc.add_note(
-                    'Missing async deps. Please re-install templatey with '
-                    + 'async optionals by replacing ``templatey`` with '
-                    + ' ``templatey[async]`` in pyproject.toml, pip, etc.')
-                raise exc
-
+        to_join = render_driver(template_instance, render_ctx)
         if error_collector:
             raise ExceptionGroup('Failed to render template', error_collector)
 
-        return ''.join(output)
-
-    async def _wrap_load_async(
-            self,
-            env_request: RenderEnvRequest,
-            to_load: TemplateClass):
-        """This wraps the load_async call so that we don't need to
-        access its results from ``render_async``, allowing requests to
-        be done in parallel.
-        """
-        env_request.results_loaded[to_load] = await self.load_async(to_load)
-
-    async def _wrap_execute_async(
-            self,
-            env_request: RenderEnvRequest,
-            to_execute: FuncExecutionRequest):
-        """This wraps the execute_async call so that we don't need to
-        access its results from ``render_async``, allowing requests to
-        be done in parallel.
-        """
-        env_request.results_executed[to_execute.result_key] = (
-            await self._execute_env_function_async(to_execute))
+        return ''.join(to_join)
 
     async def _execute_env_function_async(
             self,
-            request: FuncExecutionRequest
-            ) -> FuncExecutionResult:
+            request: FuncExecutionRequest,
+            injections: list[TemplateInjection],
+            precall: dict[PrecallCacheKey, FuncExecutionResult]
+            ) -> None:
         try:
             container = self._env_functions[request.name]
             if container.is_async:
-                retval = await container.function(
+                exe_result = await container.function(
                     *request.args, **request.kwargs)
             else:
-                retval = container.function(*request.args, **request.kwargs)
+                exe_result = container.function(
+                    *request.args, **request.kwargs)
 
-            return FuncExecutionResult(
+            for result_segment in exe_result:
+                if is_template_instance(result_segment):
+                    injections.append((request.provenance, result_segment))
+
+            precall[request.result_key] = FuncExecutionResult(
                 name=request.name,
-                retval=retval,
+                retval=exe_result,
                 exc=None)
+
         except Exception as exc:
-            return FuncExecutionResult(
+            precall[request.result_key] = FuncExecutionResult(
                 name=request.name,
                 retval=None,
                 exc=exc)
@@ -654,47 +676,3 @@ def _infer_asyncness(env_function: EnvFunction | EnvFunctionAsync) -> bool:
     return (
         inspect.iscoroutinefunction(env_function)
         or inspect.isawaitable(env_function))
-
-
-def _coerce_modified_segment(
-        modified_segment:
-            str
-            | EnvFuncInvocationRef
-            | TemplateInstanceContentRef
-            | TemplateInstanceVariableRef,
-        part_index_counter: count,
-            ) -> (
-                LiteralTemplateString
-                | InterpolatedContent
-                | InterpolatedVariable
-                | InterpolatedFunctionCall):
-    """Converts the result of segment modification into an actual
-    parsed template resource part, including a part index.
-    """
-    if isinstance(modified_segment, str):
-        return LiteralTemplateString(
-            modified_segment, part_index=next(part_index_counter))
-
-    elif isinstance(modified_segment, EnvFuncInvocationRef):
-        return InterpolatedFunctionCall(
-            part_index=next(part_index_counter),
-            name=modified_segment.name,
-            call_args=modified_segment.call_args,
-            call_args_exp=None,
-            call_kwargs=modified_segment.call_kwargs,
-            call_kwargs_exp=None)
-
-    elif isinstance(modified_segment, TemplateInstanceContentRef):
-        return InterpolatedContent(
-            part_index=next(part_index_counter),
-            name=modified_segment.name,
-            config=InterpolationConfig())
-
-    elif isinstance(modified_segment, TemplateInstanceVariableRef):
-        return InterpolatedVariable(
-            part_index=next(part_index_counter),
-            name=modified_segment.name,
-            config=InterpolationConfig())
-
-    else:
-        raise TypeError('Unknown modified segment type!', modified_segment)

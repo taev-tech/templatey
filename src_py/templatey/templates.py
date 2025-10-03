@@ -3,7 +3,6 @@ from __future__ import annotations
 import functools
 import inspect
 import logging
-import re
 import sys
 import typing
 from collections.abc import Callable
@@ -11,6 +10,8 @@ from collections.abc import Collection
 from collections.abc import Iterable
 from collections.abc import Mapping
 from collections.abc import Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import _MISSING_TYPE
 from dataclasses import Field
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from typing import Annotated
 from typing import Any
 from typing import Literal
 from typing import Protocol
+from typing import TypedDict
+from typing import Unpack
 from typing import dataclass_transform
 from typing import overload
 
@@ -27,19 +30,20 @@ from docnote import DocnoteConfig
 from docnote import Note
 from docnote import docnote
 
-from templatey._signature import TemplateSignature2
+from templatey._signature import TemplateSignature
+from templatey._types import TemplateClass
 from templatey.interpolators import NamedInterpolator
+from templatey.modifiers import SegmentModifier
 from templatey.parser import InterpolationConfig
-from templatey.parser import LiteralTemplateString
-from templatey.parser import TemplateInstanceContentRef
-from templatey.parser import TemplateInstanceDataRef
-from templatey.parser import TemplateInstanceVariableRef
 
 logger = logging.getLogger(__name__)
 
 if typing.TYPE_CHECKING:
     from templatey.environments import AsyncTemplateLoader
     from templatey.environments import SyncTemplateLoader
+
+_CLOSURE_ANCHORS: ContextVar[dict[TemplateClass, FrameType]] = ContextVar(
+    '_CLOSURE_ANCHORS')
 
 
 class VariableEscaper(Protocol):
@@ -102,6 +106,19 @@ class FieldConfig[T]:
     transformer: InterpolationTransformer[T] | None = None
 
 
+class _DataclassFieldKwargs(TypedDict, total=False):
+    init: bool
+    repr: bool
+    hash: bool | None
+    compare: bool
+    metadata: Mapping[Any, Any] | None
+    kw_only: bool | Literal[_MISSING_TYPE.MISSING]
+
+
+class _DataclassFieldKwargs14(_DataclassFieldKwargs, TypedDict, total=False):
+    doc: str | None
+
+
 # The following is adapted directly from typeshed. We did some formatting
 # updates, and inserted our transformer param.
 if sys.version_info >= (3, 14):
@@ -111,13 +128,7 @@ if sys.version_info >= (3, 14):
             /, *,
             default: _T,
             default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
-            init: bool = True,
-            repr: bool = True,
-            hash: bool | None = None,
-            compare: bool = True,
-            metadata: Mapping[Any, Any] | None = None,
-            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            doc: str | None = None,
+            **field_kwargs: Unpack[_DataclassFieldKwargs14]
             ) -> _T: ...
     @overload
     def template_field[_T](
@@ -125,13 +136,7 @@ if sys.version_info >= (3, 14):
             /, *,
             default: Literal[_MISSING_TYPE.MISSING] = ...,
             default_factory: Callable[[], _T],
-            init: bool = True,
-            repr: bool = True,
-            hash: bool | None = None,
-            compare: bool = True,
-            metadata: Mapping[Any, Any] | None = None,
-            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            doc: str | None = None,
+            **field_kwargs: Unpack[_DataclassFieldKwargs14]
             ) -> _T: ...
     @overload
     def template_field[_T](
@@ -139,13 +144,7 @@ if sys.version_info >= (3, 14):
             /, *,
             default: Literal[_MISSING_TYPE.MISSING] = ...,
             default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
-            init: bool = True,
-            repr: bool = True,
-            hash: bool | None = None,
-            compare: bool = True,
-            metadata: Mapping[Any, Any] | None = None,
-            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            doc: str | None = None,
+            **field_kwargs: Unpack[_DataclassFieldKwargs14]
             ) -> Any: ...
 
 # This is technically only valid for >=3.10, but we require that anyways
@@ -156,12 +155,7 @@ else:
             /, *,
             default: _T,
             default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
-            init: bool = True,
-            repr: bool = True,
-            hash: bool | None = None,
-            compare: bool = True,
-            metadata: Mapping[Any, Any] | None = None,
-            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            **field_kwargs: Unpack[_DataclassFieldKwargs]
             ) -> _T: ...
     @overload
     def template_field[_T](
@@ -169,12 +163,7 @@ else:
             /, *,
             default: Literal[_MISSING_TYPE.MISSING] = ...,
             default_factory: Callable[[], _T],
-            init: bool = True,
-            repr: bool = True,
-            hash: bool | None = None,
-            compare: bool = True,
-            metadata: Mapping[Any, Any] | None = None,
-            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            **field_kwargs: Unpack[_DataclassFieldKwargs]
             ) -> _T: ...
     @overload
     def template_field[_T](
@@ -182,12 +171,7 @@ else:
             /, *,
             default: Literal[_MISSING_TYPE.MISSING] = ...,
             default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
-            init: bool = True,
-            repr: bool = True,
-            hash: bool | None = None,
-            compare: bool = True,
-            metadata: Mapping[Any, Any] | None = None,
-            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            **field_kwargs: Unpack[_DataclassFieldKwargs]
             ) -> Any: ...
 
 
@@ -218,42 +202,27 @@ if sys.version_info >= (3, 14):
             *,
             default: _T,
             default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
-            init: bool = True,
-            repr: bool = True,
-            hash: bool | None = None,
-            compare: bool = True,
-            metadata: Mapping[Any, Any] | None = None,
-            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            doc: str | None = None,
-            transformer: InterpolationTransformer[_T] | None = None,
+            # Deprecated name, but param itself is deprecated
+            prerenderer: InterpolationTransformer[_T] | None = None,
+            **field_kwargs: Unpack[_DataclassFieldKwargs14],
             ) -> _T: ...
     @overload
     def param[_T](
             *,
             default: Literal[_MISSING_TYPE.MISSING] = ...,
             default_factory: Callable[[], _T],
-            init: bool = True,
-            repr: bool = True,
-            hash: bool | None = None,
-            compare: bool = True,
-            metadata: Mapping[Any, Any] | None = None,
-            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            doc: str | None = None,
-            transformer: InterpolationTransformer[_T] | None = None,
+            # Deprecated name, but param itself is deprecated
+            prerenderer: InterpolationTransformer[_T] | None = None,
+            **field_kwargs: Unpack[_DataclassFieldKwargs14],
             ) -> _T: ...
     @overload
     def param[_T](
             *,
             default: Literal[_MISSING_TYPE.MISSING] = ...,
             default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
-            init: bool = True,
-            repr: bool = True,
-            hash: bool | None = None,
-            compare: bool = True,
-            metadata: Mapping[Any, Any] | None = None,
-            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            doc: str | None = None,
-            transformer: InterpolationTransformer[_T] | None = None,
+            # Deprecated name, but param itself is deprecated
+            prerenderer: InterpolationTransformer[_T] | None = None,
+            **field_kwargs: Unpack[_DataclassFieldKwargs14],
             ) -> Any: ...
 
 # This is technically only valid for >=3.10, but we require that anyways
@@ -263,39 +232,27 @@ else:
             *,
             default: _T,
             default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
-            init: bool = True,
-            repr: bool = True,
-            hash: bool | None = None,
-            compare: bool = True,
-            metadata: Mapping[Any, Any] | None = None,
-            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            transformer: InterpolationTransformer[_T] | None = None,
+            # Deprecated name, but param itself is deprecated
+            prerenderer: InterpolationTransformer[_T] | None = None,
+            **field_kwargs: Unpack[_DataclassFieldKwargs]
             ) -> _T: ...
     @overload
     def param[_T](
             *,
             default: Literal[_MISSING_TYPE.MISSING] = ...,
             default_factory: Callable[[], _T],
-            init: bool = True,
-            repr: bool = True,
-            hash: bool | None = None,
-            compare: bool = True,
-            metadata: Mapping[Any, Any] | None = None,
-            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            transformer: InterpolationTransformer[_T] | None = None,
+            # Deprecated name, but param itself is deprecated
+            prerenderer: InterpolationTransformer[_T] | None = None,
+            **field_kwargs: Unpack[_DataclassFieldKwargs]
             ) -> _T: ...
     @overload
     def param[_T](
             *,
             default: Literal[_MISSING_TYPE.MISSING] = ...,
             default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
-            init: bool = True,
-            repr: bool = True,
-            hash: bool | None = None,
-            compare: bool = True,
-            metadata: Mapping[Any, Any] | None = None,
-            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
-            transformer: InterpolationTransformer[_T] | None = None,
+            # Deprecated name, but param itself is deprecated
+            prerenderer: InterpolationTransformer[_T] | None = None,
+            **field_kwargs: Unpack[_DataclassFieldKwargs]
             ) -> Any: ...
 
 
@@ -303,10 +260,11 @@ else:
 @docnote(DocnoteConfig(include_in_docs=False))
 def param(
         *,
-        transformer: InterpolationTransformer | None = None,
+        # Deprecated name, but param itself is deprecated
+        prerenderer: InterpolationTransformer | None = None,
         metadata: Mapping[Any, Any] | None = None,
         **field_kwargs):
-    field_config = FieldConfig(transformer=transformer)
+    field_config = FieldConfig(transformer=prerenderer)
 
     if metadata is None:
         metadata = {'templatey.field_config': field_config}
@@ -319,21 +277,24 @@ def param(
     return field(**field_kwargs, metadata=metadata)
 
 
+class _DataclassKwargs(TypedDict, total=False):
+    init: bool
+    repr: bool
+    eq: bool
+    order: bool
+    unsafe_hash: bool
+    frozen: bool
+    match_args: bool
+    kw_only: bool
+    slots: bool
+    weakref_slot: bool
+
+
 @dataclass_transform(field_specifiers=(template_field, param, field, Field))
-def template[T: type](  # noqa: PLR0913
-        config: TemplateConfig,
+def template[T: type](
+        parse_config: TemplateConfig,
         template_resource_locator: object,
         /, *,
-        init: bool = True,
-        repr: bool = True,  # noqa: A002
-        eq: bool = True,
-        order: bool = False,
-        unsafe_hash: bool = False,
-        frozen: bool = False,
-        match_args: bool = True,
-        kw_only: bool = False,
-        slots: bool = True,
-        weakref_slot: bool = False,
         loader: Annotated[
                 AsyncTemplateLoader | SyncTemplateLoader | None,
                 Note('''Explicit template loaders can be passed to a template
@@ -353,7 +314,8 @@ def template[T: type](  # noqa: PLR0913
                     declared. The first modifier to match the segment will
                     short-circuit the remaining modifiers, regardless of
                     whether or not it applies any changes.''')
-            ] = None
+            ] = None,
+        **dataclass_kwargs: Unpack[_DataclassKwargs]
         ) -> Callable[[T], T]:
     """This both transforms the decorated class into a stdlib dataclass
     and declares it as a templatey template.
@@ -368,22 +330,16 @@ def template[T: type](  # noqa: PLR0913
     if segment_modifiers is None:
         segment_modifiers = []
 
+    # As per docs, we default to using slots, since it makes everything
+    # faster
+    if 'slots' not in dataclass_kwargs:
+        dataclass_kwargs['slots'] = True
+
     return functools.partial(
         make_template_definition,
-        dataclass_kwargs={
-            'init': init,
-            'repr': repr,
-            'eq': eq,
-            'order': order,
-            'unsafe_hash': unsafe_hash,
-            'frozen': frozen,
-            'match_args': match_args,
-            'kw_only': kw_only,
-            'slots': slots,
-            'weakref_slot': weakref_slot
-        },
+        dataclass_kwargs=dataclass_kwargs,
         template_resource_locator=template_resource_locator,
-        template_config=config,
+        template_config=parse_config,
         segment_modifiers=segment_modifiers,
         explicit_loader=loader)
 
@@ -412,55 +368,11 @@ class TemplateConfig[T: type, L: object]:
             it allows, for example, to allowlist certain HTML tags.''')]
 
 
-def _extract_template_class_locals() -> dict[str, Any] | None:
-    """When templates are created from inside a closure (ex, during
-    testing, where this is extremely common), we need access to the
-    locals from the closure to resolve type hints. This method relies
-    upon ``inspect`` to extract them.
-
-    Note that this can be very sensitive to where, exactly, you put it
-    within the templatey code. Always put it as close as possible to
-    the public API method, so that the first frame from another module
-    coincides with the call to decorate a template class.
-    """
-    upmodule_frame = _get_first_frame_from_other_module()
-    if upmodule_frame is not None:
-        return upmodule_frame.f_locals
-
-
-def _get_first_frame_from_other_module() -> FrameType | None:
-    """Both of our closure workarounds require walking up the stack
-    until we reach the first frame coming from ^^outside^^ the ~~house~~
-    current module. This performs that lookup.
-
-    **Note that this is pretty fragile.** Or, put a different way: it
-    does exactly what the function name suggest it does: it finds the
-    FIRST frame from another module. That doesn't mean we won't return
-    to this module; it doesn't mean it's from the actual client library,
-    etc. It just means it's the first frame that isn't from this
-    module.
-    """
-    upstack_frame = inspect.currentframe()
-    if upstack_frame is None:
-        return None
-    else:
-        this_module = upstack_module = inspect.getmodule(
-            _extract_template_class_locals)
-        while upstack_module is this_module:
-            if upstack_frame is None:
-                return None
-
-            upstack_frame = upstack_frame.f_back
-            upstack_module = inspect.getmodule(upstack_frame)
-
-    return upstack_frame
-
-
 @dataclass_transform(field_specifiers=(template_field, param, field, Field))
 def make_template_definition[T: type](
         cls: T,
         *,
-        dataclass_kwargs: dict[str, bool],
+        dataclass_kwargs: _DataclassKwargs,
         # Note: needs to be understandable by template loader
         template_resource_locator: object,
         template_config: TemplateConfig,
@@ -473,11 +385,18 @@ def make_template_definition[T: type](
     bookkeeping. Returns the resulting dataclass.
     """
     cls = dataclass(**dataclass_kwargs)(cls)
-    cls._templatey_signature = TemplateSignature2(
-        config=template_config,
+    cls._templatey_signature = TemplateSignature(
+        parse_config=template_config,
         resource_locator=template_resource_locator,
         explicit_loader=explicit_loader,
         segment_modifiers=tuple(segment_modifiers))
+
+    closure_anchor = _CLOSURE_ANCHORS.get(None)
+    if closure_anchor is not None:
+        upstack_frame = _get_first_frame_from_other_module()
+        if upstack_frame is not None:
+            closure_anchor[cls] = upstack_frame
+
     return cls
 
 
@@ -620,169 +539,82 @@ class ComplexContent(_ComplexContentBase):
             ''')]
 
 
-@dataclass(slots=True, frozen=True)
-class SegmentModifier:
-    """Segment modifiers are a particularly powerful tool for reducing
-    the verbosity of the actual template text. They allow you to modify
-    literal string segments that match a particular pattern, replacing
-    that pattern with a different segment sequence.
+@contextmanager
+def anchor_closure_scope():
+    """We strongly recommend against defining templates within a
+    closure, as it can cause a number of fragility issues, and just
+    generally makes less sense than defining templates at the module
+    level. However, if you absolutely must create a new template within
+    a closure, you must use ``anchor_closure_scope`` to give the
+    templates a known closure scope. Can be used either as a decorator
+    or a context:
 
-    For example, you could have a modifier that replaces every newline
-    in the segment with a call to an ``add_indentation`` environment
-    function:
-
-    Note that if you want access to any part of the matched pattern,
-    you must include it in a capture group:
-    """
-    pattern: re.Pattern
-    modifier: Callable[
-        [SegmentModifierMatch],
-        Sequence[
-            EnvFuncInvocationRef
-            | TemplateInstanceContentRef
-            | TemplateInstanceVariableRef
-            | str]]
-
-    def apply_and_flatten(
-            self,
-            literal_template_string: LiteralTemplateString
-            ) -> tuple[
-                bool,
-                list[
-                    str
-                    | EnvFuncInvocationRef
-                    | TemplateInstanceContentRef
-                    | TemplateInstanceVariableRef]]:
-        """This takes a literal template string segment and applies all
-        modifiers. This gets it ready to be converted into the actual
-        ParsedTemplateResource parts we need, but doesn't yet perform
-        the final conversion.
-
-        Returns a tuple of [had_matches, segments_after_modification]
-        """
-        after_modification: list[
-            str
-            | EnvFuncInvocationRef
-            | TemplateInstanceContentRef
-            | TemplateInstanceVariableRef] = []
-        had_matches = False
-        splits = self.pattern.split(literal_template_string)
-        for split_segment_or_modification in SegmentModifierMatch.from_splits(
-            self.pattern,
-            splits
-        ):
-            if isinstance(split_segment_or_modification, str):
-                # Here's where we filter out any empty strings. This also helps
-                # us re-normalize the output from re.split, so that we recover
-                # from the land of "let's use an empty string as a placeholder
-                # for anything we did implicitly"
-                if split_segment_or_modification:
-                    after_modification.append(split_segment_or_modification)
-            else:
-                had_matches = True
-                after_modification.extend(
-                    self.modifier(split_segment_or_modification))
-
-        return had_matches, after_modification
-
-
-@dataclass(slots=True, kw_only=True)
-class SegmentModifierMatch:
-    """
-    """
-    captures: Annotated[
-        list[str],
-        Note(
-            '''The captures in a segment modifier match correspond to
-            the capture groups in the ``SegmentModifier`` pattern that
-            resulted in the match. If the pattern had zero match groups,
-            it will be an empty list. If it had one match group, it will
-            be a single-item list. Etc.
-
-            The ordering will be the same as the ordering of the groups
-            in the original pattern. Named groups are not supported.
-            ''')]
-
-    @classmethod
-    def from_splits(
-            cls,
-            src_pattern: re.Pattern,
-            splits: list[str]
-            ) -> Iterable[SegmentModifierMatch | str]:
-        # Note: the +1 is because we need to account for the literal strings
-        # in the pattern; otherwise the mod math doesn't work out! This also
-        # has the added benefit of meaning we don't need to change behavior
-        # between both cases.
-        split_type_count = src_pattern.groups + 1
-
-        current_captures = []
-        for index, post_split_segment in enumerate(splits):
-            # This is always literal text, even if it's an empty string.
-            if not index % split_type_count:
-                # Note that the zeroth and last index are always literal text,
-                # and are never preceeded or followed by a capture. However,
-                # we still need to yield the preceeding match when we reach
-                # the end.
-                if 0 < index:
-                    yield cls(captures=current_captures)
-                    current_captures = []
-
-                # Note: we're saving the "cull empty strings" bit for later;
-                # it makes the logic much cleaner to do one at a time
-                yield post_split_segment
-
-            else:
-                current_captures.append(post_split_segment)
-
-
-@dataclass(slots=True, init=False)
-class EnvFuncInvocationRef:
-    """Used to indicate that a segment modification needs to invoke an
-    environment function. Instantiate these like partials:
-
-    > Invocation example
-        def my_env_func(foo: str, *, bar: int) -> list[str]:
+    > Decorator usage
+    __embed__: 'code/python'
+        @anchor_closure_scope()
+        def my_func():
+            # template definition goes here
             ...
 
-        EnvFuncInvocationRef('my_env_func', 'foo', bar=3)
-        EnvFuncInvocationRef(
-            'my_env_func',
-            # TemplateInstanceContentRef, TemplateInstanceDataRef, and
-            # TemplateInstanceVariableRef are all supported, including nested
-            # within containers
-            TemplateInstanceVariableRef('foo'),
-            bar=TemplateInstanceDataRef('bar'))
-
-    Note that unfortunately, until/unless higher-kinded type support is
-    added to python, these won't be able to type-check correctly.
+    > Context manager usage
+    __embed__: 'code/python'
+        def my_other_func():
+            with anchor_closure_scope():
+                # template definition goes here
+                ...
     """
-    name: str
-    call_args: tuple[
-        object
-        | TemplateInstanceContentRef
-        | TemplateInstanceDataRef
-        | TemplateInstanceVariableRef, ...]
-    call_kwargs: dict[
-        str,
-        object
-        | TemplateInstanceContentRef
-        | TemplateInstanceDataRef
-        | TemplateInstanceVariableRef]
+    ctx_token = _CLOSURE_ANCHORS.set({})
+    try:
+        yield
+    finally:
+        _CLOSURE_ANCHORS.reset(ctx_token)
 
-    def __init__(
-            self,
-            name: str,
-            /,
-            *call_args:
-                object
-                | TemplateInstanceContentRef
-                | TemplateInstanceDataRef
-                | TemplateInstanceVariableRef,
-            **call_kwargs:
-                object
-                | TemplateInstanceContentRef
-                | TemplateInstanceDataRef
-                | TemplateInstanceVariableRef):
-        self.name = name
-        self.call_args = call_args
-        self.call_kwargs = call_kwargs
+
+def _get_first_frame_from_other_module() -> FrameType | None:
+    """When templates are created from inside a closure (ex, during
+    testing, where this is extremely common), we need access to the
+    locals from the closure to resolve type hints. This method relies
+    upon ``inspect`` to extract them.
+
+    Note that this can be very sensitive to where, exactly, you put it
+    within the templatey code. Always put it as close as possible to
+    the public API method, so that the first frame from another module
+    coincides with the call to decorate a template class.
+
+    **Note that this is pretty fragile.** Or, put a different way: it
+    does exactly what the function name suggest it does: it finds the
+    FIRST frame from another module. That doesn't mean we won't return
+    to this module; it doesn't mean it's from the actual client library,
+    etc. It just means it's the first frame that isn't from this
+    module.
+    """
+    upstack_frame = inspect.currentframe()
+    if upstack_frame is None:
+        return None
+    else:
+        # Technically not 100% correct since we might have reloads, but...
+        # I mean at that point, good fucking luck with closures.
+        this_module = upstack_module = sys.modules[__name__]
+        while upstack_module is this_module:
+            if upstack_frame is None:
+                return None
+
+            upstack_frame = upstack_frame.f_back
+            upstack_module = inspect.getmodule(upstack_frame)
+
+    return upstack_frame
+
+
+@docnote(DocnoteConfig(include_in_docs=False))
+def get_closure_locals(template_cls: TemplateClass) -> dict[str, Any] | None:
+    """This function -- which is not intended to be part of the public
+    API for templatey -- checks first for an anchored closure scope,
+    and then (if one is found), checks for a registered frame for the
+    passed template class. If everything checks out, we extract the
+    locals from that frame and return them; otherwise, we return None.
+    """
+    closure_anchor = _CLOSURE_ANCHORS.get(None)
+    if closure_anchor is not None:
+        upstack_frame = closure_anchor.get(template_cls)
+        if upstack_frame is not None:
+            return upstack_frame.f_locals

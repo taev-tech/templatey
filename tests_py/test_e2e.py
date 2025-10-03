@@ -18,15 +18,15 @@ from templatey import template
 from templatey import template_field
 from templatey.environments import RenderEnvironment
 from templatey.interpolators import NamedInterpolator
+from templatey.modifiers import EnvFuncInvocationRef
+from templatey.modifiers import SegmentModifier
+from templatey.modifiers import SegmentModifierMatch
 from templatey.parser import TemplateInstanceDataRef
 from templatey.prebaked.env_funcs import inject_templates
 from templatey.prebaked.loaders import DictTemplateLoader
 from templatey.prebaked.template_configs import html
 from templatey.prebaked.template_configs import html_escaper
 from templatey.prebaked.template_configs import html_verifier
-from templatey.templates import EnvFuncInvocationRef
-from templatey.templates import SegmentModifier
-from templatey.templates import SegmentModifierMatch
 from templatey.templates import TemplateConfig
 
 
@@ -1032,13 +1032,13 @@ class TestErrorRecovery:
                     'nested': nested,
                     'enclosing': enclosing}))
 
-        with pytest.raises(ExceptionGroup) as exc_info:
+        # Note that this doesn't get upgraded into an exception group, because
+        # it just totally breaks rendering. In theory this should be caught by
+        # your type checker anyways.
+        with pytest.raises(KeyError):
             render_env.render_sync(
                 EnclosingTemplateWithFordrefAlias(
                     foo1=[
                         NestedFordreffedTemplate(value=...),
                         NotATemplate()  # type: ignore
                     ]))
-
-        excs = exc_info.value.exceptions
-        assert len(excs) == 1

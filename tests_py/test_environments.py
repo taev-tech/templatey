@@ -9,6 +9,8 @@ import anyio
 import pytest
 
 from templatey._provenance import Provenance
+from templatey._renderer import FuncExecutionRequest
+from templatey._renderer import FuncExecutionResult
 from templatey._types import Slot
 from templatey._types import TemplateIntersectable
 from templatey._types import Var
@@ -27,8 +29,6 @@ from templatey.parser import parse
 from templatey.prebaked.loaders import DictTemplateLoader
 from templatey.prebaked.loaders import InlineStringTemplateLoader
 from templatey.prebaked.template_configs import html
-from templatey.renderer import FuncExecutionRequest
-from templatey.renderer import FuncExecutionResult
 from templatey.templates import SegmentModifier
 from templatey.templates import template
 
