@@ -5,7 +5,6 @@ to do it the other way and it was a massive headache.
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass
 from dataclasses import field
 from typing import cast
@@ -67,7 +66,19 @@ def ensure_recursive_totality(
         signature.fieldset = NormalizedFieldset.from_template_cls(
             template_cls)
 
-    if not hasattr(signature, 'total_inclusions'):
+    # If we've already calculated total inclusions, AND this is a recursive
+    # call, we still need to update the caller with the total inclusions!
+    # This is critical; the point of recursive calls is not to populate the
+    # value on the downstream child, but rather to extract inclusions on
+    # behalf of the upstream parent.
+    if hasattr(signature, 'total_inclusions'):
+        if _recursion_guard is not None:
+            _recursion_guard.root_total_inclusions.update(
+                signature.total_inclusions)
+
+    # But if we haven't calculated total inclusions yet, obviously we still
+    # need to do that, regardless of whether or not this is a recursive call.
+    else:
         total_inclusions: set[TemplateClass]
         if _recursion_guard is None:
             total_inclusions = {template_cls}
@@ -106,6 +117,8 @@ def ensure_recursive_totality(
         # We only want to set the value if we're being called on the root;
         # nothing else is definitely correct!
         if _recursion_guard is None:
+            # Note that this needs to be before the recursive call to
+            # prevent infinite recursion
             signature.total_inclusions = frozenset(total_inclusions)
 
             # But we do actually need to ensure recursive totality, so then

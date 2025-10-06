@@ -84,6 +84,9 @@ class PrerenderTreeRoute(tuple[str, TemplateClass, 'PrerenderTreeNode']):
             slot_type: TemplateClass,
             subtree: PrerenderTreeNode,
             ) -> PrerenderTreeRoute:
+        """This seems weird and redundant, but it lets us support kwargs
+        for creation, as well as the usual tuple signature.
+        """
         return cls((slot_name, slot_type, subtree))
 
     @property
@@ -164,7 +167,6 @@ class PrerenderTreeNode(list[PrerenderTreeRoute]):
         """Extracts all dynamic template injections and function
         executions from the root instance, using ourselves as the tree.
         """
-        print(f'extracting from {type(from_instance)}')
         stack: list[_ExtractionFrame] = [
             _ExtractionFrame(
                 active_instance=from_instance,
@@ -192,7 +194,6 @@ class PrerenderTreeNode(list[PrerenderTreeRoute]):
                 frame_provenance = frame.wip_provenance
 
                 for abstract_call in frame_subtree.abstract_calls:
-                    print(f'extraction encountered abstract call {abstract_call}')
                     args, kwargs = frame_provenance.bind_call_signature(
                         abstract_call,
                         template_preload,
@@ -606,21 +607,13 @@ class SlotTreeNode(list[_SlotTreeRoute]):
     # Both recursion fields are updated by children as they are created
     nonrecursive_descendants: set[TemplateClass] = field(
         default_factory=set, repr=False)
-    # These are deeper nodes, so no weakref is needed (the refs still flow in
-    # the same direction)
-    # Note that the ordering of the tuple here is deliberately different
-    # than in other places, because it's also semantically different. In other
-    # places, it's the slot path FOR the next-door node; in this case, it's
-    # the slot path WITHIN the next-door node!
-    recursion_loop_sources: list[tuple[SlotTreeNode, SlotPath]] = \
-        field(default_factory=list, repr=False)
 
     # Proxy object for repr; see docnote for _ProxyDescriptor
     _children: list[_SlotTreeRoute] = field(init=False)
 
     def __post_init__(self):
-        for _, _, parent_pending_node in self.nodepath_parents:
-            parent_pending_node.nonrecursive_descendants.add(self.slot_cls)
+        for _, _, parent_slot_tree_node in self.nodepath_parents:
+            parent_slot_tree_node.nonrecursive_descendants.add(self.slot_cls)
 
     def get_all_nonrecursive_inclusions(
             self
@@ -644,11 +637,11 @@ class SlotTreeNode(list[_SlotTreeRoute]):
             yield from self.nodepath_parents
         else:
             offset_encountered = False
-            for slot_name, slot_cls, pending_node in self.nodepath_parents:
+            for slot_name, slot_cls, slot_tree_node in self.nodepath_parents:
                 if offset_encountered:
-                    yield (slot_name, slot_cls, pending_node)
+                    yield (slot_name, slot_cls, slot_tree_node)
 
-                if pending_node is offset:
+                if slot_tree_node is offset:
                     offset_encountered = True
 
             if not offset_encountered:
@@ -788,61 +781,56 @@ class SlotTreeNode(list[_SlotTreeRoute]):
             )._templatey_signature.fieldset.dynamic_class_slot_names}
         target_slot_classes = inclusions_with_precall | inclusions_with_dynacls
 
-        # We use these to detect and resolve recursion loops
-        slotnode_by_id: dict[int, PrerenderTreeNode] = {}
-        visited_node_ids: set[int] = {self.id_}
+        # We use this to detect and resolve recursion loops
+        provisioned_node_by_id: dict[int, PrerenderTreeNode] = {}
 
         # Setting the root node to None in advance makes it trivial to detect
         # an empty result. Or more accurately, it means we don't have to detect
         # anything; we can just use the value directly
-        root_node: None | PrerenderTreeNode = None
-        stack: list[_PrerenderTreeBuilderFrame] = [
-            _PrerenderTreeBuilderFrame(pending_node=self)]
+        root_frame = _PrerenderTreeBuilderFrame.provision(
+            slot_tree_node=self,
+            template_preload=template_preload,
+            target_slot_classes=target_slot_classes,
+            provisioned_node_by_id=provisioned_node_by_id)
+        # Early return: if we don't need a frame for the root, then it means
+        # that the entire tree ~~is boring~~ has no dynamic classes and no
+        # precalls and therefore no prerender tree
+        if root_frame is None:
+            return
 
+        root_node = root_frame.pending_prerender_tree_node
+        stack: list[_PrerenderTreeBuilderFrame] = [root_frame]
         while stack:
             frame = stack[-1]
 
-            # When we exhaust all of the children in a frame, we need to first
-            # check the node associated with the frame itself before advancing
             if frame.exhausted:
-                print(f'exhausted frame. {self.slot_cls=}\n    {frame.pending_node.slot_cls=}')
-                # If we're at the root node, we don't need to check anything;
-                # root nodes are always included.
-                if len(stack) > 1:
-                    frame.finalize(
-                        template_preload,
-                        target_slot_classes=target_slot_classes,
-                        slotnode_by_id=slotnode_by_id,
-                        parent_frame=stack[-2])
-                else:
-                    root_node = frame.finalize(
-                        template_preload,
-                        target_slot_classes=target_slot_classes,
-                        slotnode_by_id=slotnode_by_id,
-                        parent_frame=None)
-
                 stack.pop()
                 continue
 
-            _, _, nested_pending_node = frame.advance()
-            # Note that culling happens when we finalize the frame later. For
-            # now, we want to keep traversing the entire tree. Don't worry,
-            # it's fast, we only do it once, and the trees are small.
-            # Also note: this prevents infinite recursion, but it also relies
-            # upon the exhaustion block to fixup the recursion in recursion
-            # sources.
-            if nested_pending_node.id_ not in visited_node_ids:
-                # Note: we can't rely upon the logic in the exhaustion block
-                # to handle this, because exhaustion works its way back out
-                # from the leaf nodes. Therefore we need something extra so
-                # that the RECURSIVE leaf nodes don't continue on back to the
-                # recursion target.
-                visited_node_ids.add(nested_pending_node.id_)
-                # NOTE: we're not adding this to the child slot routes in the
-                # current frame yet! That gets handled when the child frame
-                # is exhausted.
-                stack.append(_PrerenderTreeBuilderFrame(
-                    pending_node=nested_pending_node))
+            slot_name, slot_cls, nested_slot_tree_node = frame.advance()
+            recursive_node = provisioned_node_by_id.get(
+                nested_slot_tree_node.id_)
+
+            if recursive_node is None:
+                deeper_frame = _PrerenderTreeBuilderFrame.provision(
+                    slot_tree_node=nested_slot_tree_node,
+                    template_preload=template_preload,
+                    target_slot_classes=target_slot_classes,
+                    provisioned_node_by_id=provisioned_node_by_id)
+                if deeper_frame is not None:
+                    frame.pending_prerender_tree_node.append(
+                        PrerenderTreeRoute.new(
+                            slot_name,
+                            slot_cls,
+                            deeper_frame.pending_prerender_tree_node))
+                    stack.append(deeper_frame)
+
+            # This could be either a direct/trivial recursion or a recursion
+            # chain; either way it'll be resolved.
+            else:
+                frame.pending_prerender_tree_node.append(
+                    PrerenderTreeRoute.new(
+                        slot_name, slot_cls, recursive_node))
 
         return root_node
 
@@ -886,34 +874,32 @@ class _PrerenderTreeBuilderFrame:
     """``_PrerenderTreeBuilderFrame`` instances are responsible for
     building up a prerender tree from a slot tree.
     """
-    pending_node: SlotTreeNode
-    child_slot_routes: list[PrerenderTreeRoute] = field(default_factory=list)
+    slot_tree_node: SlotTreeNode
+    pending_prerender_tree_node: PrerenderTreeNode
     child_index: int = 0
 
     @property
     def exhausted(self) -> bool:
-        return self.child_index >= len(self.pending_node)
+        return self.child_index >= len(self.slot_tree_node)
 
     def advance(self) -> _SlotTreeRoute:
-        next_route = self.pending_node[self.child_index]
+        next_route = self.slot_tree_node[self.child_index]
         self.child_index += 1
         return next_route
 
-    def finalize(
-            self,
+    @classmethod
+    def provision(
+            cls,
+            slot_tree_node: SlotTreeNode,
             template_preload: dict[TemplateClass, ParsedTemplateResource],
             target_slot_classes: set[TemplateClass],
-            slotnode_by_id: dict[int, PrerenderTreeNode],
-            parent_frame: _PrerenderTreeBuilderFrame | None,
-            ) -> PrerenderTreeNode | None:
-        """Call this once a frame has been exhausted to construct a
-        prerender tree node from it -- if, and only if, one is required.
-
-        Returns the created node or None, **and adds the created node
-        to any passed ``parent_frame``.**
+            provisioned_node_by_id: dict[int, PrerenderTreeNode],
+            ) -> _PrerenderTreeBuilderFrame | None:
+        """Call this to create a new frame if, and only if, one is
+        required. Returns the created frame if one is needed; otherwise
+        (ie, if the branch should be culled) returns None.
         """
-        new_node: PrerenderTreeNode | None = None
-        slot_cls = self.pending_node.slot_cls
+        slot_cls = slot_tree_node.slot_cls
         slot_signature = cast(
             type[TemplateIntersectable], slot_cls)._templatey_signature
 
@@ -923,56 +909,33 @@ class _PrerenderTreeBuilderFrame:
         # we need to keep it, but if not, well, we can discard.
         # This fully encapsulates all of the complicated logic checks we'd
         # otherwise be doing into a simple set intersection.
-        print(f'... {target_slot_classes=}')
         if target_slot_classes & slot_signature.total_inclusions:
-            print(f'... intersection of interests for {self.pending_node.slot_cls}')
             parsed_template = template_preload[slot_cls]
 
             new_node = PrerenderTreeNode(
-                self.child_slot_routes,
                 # This is partly for convenience (by keeping the
                 # IDs the same it's easier to see what's going on)
                 # but is also critical for resolving recursion
                 # (see below)
-                id_=self.pending_node.id_,
+                id_=slot_tree_node.id_,
                 abstract_calls=tuple(itertools.chain.from_iterable(
                     parsed_template.function_calls.values())),
                 dynamic_slot_names=tuple(
                     # Sorting here to maintain consistent ordering; can be
                     # helpful with tests
-                    sorted(self.pending_node.dynamic_slot_names)))
-            slotnode_by_id[new_node.id_] = new_node
+                    sorted(slot_tree_node.dynamic_slot_names)))
+            provisioned_node_by_id[new_node.id_] = new_node
 
-            if parent_frame is not None:
-                parent_frame.child_slot_routes.append(
-                    # Note: this will work, even for leaf nodes; we'll get to
-                    # the leaf node, which will have no children. That will
-                    # therefore be immediately exhausted, and the
-                    # node created -- with an empty subtree.
-                    # Then we'll proceed back up the tree from
-                    # there.
-                    PrerenderTreeRoute.new(
-                        self.pending_node.slot_name,
-                        self.pending_node.slot_cls,
-                        new_node))
-
-            # Finally, we need to restore any recursion loops, because
-            # finalization works from the leafmost-nodes backwards.
-            for (
-                recursion_src, recursive_slotpath
-            ) in self.pending_node.recursion_loop_sources:
-                recursive_leaf = slotnode_by_id[recursion_src.id_]
-                recursive_leaf.append(
-                    PrerenderTreeRoute.new(
-                        *recursive_slotpath, new_node))
+            return cls(
+                slot_tree_node=slot_tree_node,
+                pending_prerender_tree_node=new_node)
 
         # Implicit second case: if there's no overlap between the total
         # inclusions and the target classes, then we never update the new_node,
         # and this returns None (relevant for the root node) and doesn't append
         # the route to the parent (relevant for other nodes) -- therefore
         # culling the node and its children.
-
-        return new_node
+        return None
 
 
 @dataclass(slots=True)
@@ -981,7 +944,7 @@ class _SlotTreeBuilderFrame:
     slot tree, which is then used to construct the prerender tree.
     """
     slot_cls: TemplateClass
-    pending_node: SlotTreeNode
+    pending_slot_tree_node: SlotTreeNode
     remaining_nested_slots: list[SlotPath]
     dynamic_slot_names: frozenset[str]
 
@@ -989,7 +952,7 @@ class _SlotTreeBuilderFrame:
     def from_slot_cls(
             cls,
             slot_cls: TemplateClass,
-            pending_node: SlotTreeNode,
+            pending_slot_tree_node: SlotTreeNode,
             ) -> _SlotTreeBuilderFrame:
         """Constructs a new slot tree builder frame for the passed
         template class. **Note that the pending node is for the passed
@@ -1000,7 +963,7 @@ class _SlotTreeBuilderFrame:
         )._templatey_signature.fieldset
         return cls(
             slot_cls=slot_cls,
-            pending_node=pending_node,
+            pending_slot_tree_node=pending_slot_tree_node,
             remaining_nested_slots=list(fieldset.slotpaths),
             dynamic_slot_names=fieldset.dynamic_class_slot_names)
 
@@ -1029,7 +992,7 @@ def build_slot_tree(
             # become string values stored on the pending node.
             # Do this during exhaustion so it only happens once per frame
             # instead of once per iteration.
-            frame.pending_node.dynamic_slot_names.update(
+            frame.pending_slot_tree_node.dynamic_slot_names.update(
                 frame.dynamic_slot_names)
             continue
 
@@ -1042,10 +1005,8 @@ def build_slot_tree(
             trivially_recursive_slot_route = (
                 nested_slot_name,
                 nested_slot_cls,
-                frame.pending_node)
-            frame.pending_node.append(trivially_recursive_slot_route)
-            frame.pending_node.recursion_loop_sources.append(
-                (frame.pending_node, (nested_slot_name, nested_slot_cls)))
+                frame.pending_slot_tree_node)
+            frame.pending_slot_tree_node.append(trivially_recursive_slot_route)
             # Note that we don't need to add this to the recursion sources,
             # because trivial recursion can't influence the culling of the tree
 
@@ -1054,20 +1015,19 @@ def build_slot_tree(
         # the previous node.
         elif (
             first_encounter
-                := frame.pending_node.check_recursion(nested_slot_cls)
+                := frame.pending_slot_tree_node.check_recursion(
+                    nested_slot_cls)
         ) is not None:
             mutually_recursive_slot_route = (
                 nested_slot_name,
                 nested_slot_cls,
                 first_encounter)
-            frame.pending_node.append(mutually_recursive_slot_route)
-            first_encounter.recursion_loop_sources.append(
-                (frame.pending_node, (nested_slot_name, nested_slot_cls)))
+            frame.pending_slot_tree_node.append(mutually_recursive_slot_route)
 
         # In the non-recursive case, we need to descend deeper into the
         # dependency graph.
         else:
-            next_node = frame.pending_node.add_child(
+            next_node = frame.pending_slot_tree_node.add_child(
                 nested_slot_name, nested_slot_cls)
             next_frame = _SlotTreeBuilderFrame.from_slot_cls(
                 nested_slot_cls, next_node)

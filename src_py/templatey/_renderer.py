@@ -109,10 +109,6 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
 
     template_signature = cast(
         TemplateIntersectable, template_instance)._templatey_signature
-    print(f'----- about to render {type(template_instance)}')
-    pprint(template_signature.slot_tree)
-    pprint(template_signature.prerender_tree)
-    print('...')
     function_precall = render_ctx.function_precall
     template_preload = render_ctx.template_preload
     root_template_preload = template_preload[type(template_instance)]
@@ -295,7 +291,6 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
         elif isinstance(next_part, InterpolatedFunctionCall):
             render_frame.part_index += 1
 
-            pprint(function_precall)
             execution_result = function_precall[
                 get_precall_cache_key(render_frame.provenance, next_part)]
             nested_render_node = _build_render_frame_for_func_result(
@@ -426,7 +421,6 @@ class RenderContext:
         and function_precall until either all resources have been
         prepared, or it needs help from the render environment.
         """
-        print(f'prepping render for {type(root_template_instance)}')
         template_preload = self.template_preload
         function_precall = self.function_precall
 
@@ -435,7 +429,6 @@ class RenderContext:
         to_execute: list[FuncExecutionRequest] = []
 
         while local_root_instances or to_execute:
-            print(f'iteration: {local_root_instances=}, {to_execute=}')
             # We need to make a copy of this here so that we can mutate the
             # local_root_instances later (to determine the next batch) without
             # affecting the processing of the current one
