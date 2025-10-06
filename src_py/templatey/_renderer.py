@@ -109,8 +109,10 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
 
     template_signature = cast(
         TemplateIntersectable, template_instance)._templatey_signature
+    print(f'----- about to render {type(template_instance)}')
     pprint(template_signature.slot_tree)
     pprint(template_signature.prerender_tree)
+    print('...')
     function_precall = render_ctx.function_precall
     template_preload = render_ctx.template_preload
     root_template_preload = template_preload[type(template_instance)]
@@ -424,6 +426,7 @@ class RenderContext:
         and function_precall until either all resources have been
         prepared, or it needs help from the render environment.
         """
+        print(f'prepping render for {type(root_template_instance)}')
         template_preload = self.template_preload
         function_precall = self.function_precall
 
@@ -432,6 +435,7 @@ class RenderContext:
         to_execute: list[FuncExecutionRequest] = []
 
         while local_root_instances or to_execute:
+            print(f'iteration: {local_root_instances=}, {to_execute=}')
             # We need to make a copy of this here so that we can mutate the
             # local_root_instances later (to determine the next batch) without
             # affecting the processing of the current one
@@ -462,6 +466,11 @@ class RenderContext:
             local_root_instances.clear()
             to_execute.clear()
 
+            # Status check: we can now say for sure that all of the precalls
+            # from the previous batches are complete, and we have a complete
+            # record of all injected instances in ``injections``.
+            local_root_instances.extend(new_injections)
+
             # Status check: we can now say for sure that the preload is
             # complete for all included classes so far, and that the prerender
             # tree has been populated as well. So now we need to check the
@@ -485,11 +494,6 @@ class RenderContext:
                         into_precall_backlog=to_execute,
                         template_preload=template_preload,
                         error_collector=error_collector)
-
-            # Status check: we can now say for sure that all of the precalls
-            # from the previous batches are complete, and we have a complete
-            # record of all injected instances in ``injections``.
-            local_root_instances.extend(new_injections)
 
 
 type _PrecallExecutionRequest = tuple[

@@ -248,6 +248,7 @@ class RenderEnvironment:
                 type[TemplateIntersectable], required_template_cls
             )._templatey_signature
 
+            # TODO: parallelize this!
             requirement_text = await template_loader.load_async(
                 required_template_cls,
                 requirement_signature.resource_locator)
@@ -265,6 +266,13 @@ class RenderEnvironment:
             # otherwise, they'll be stored in the cache with an incomplete
             # signature.
             ensure_slot_tree(requirement_signature, required_template_cls)
+
+        # Note: this needs to be separated out from the above loop, because
+        # it requires all of the resources to be loaded prior to execution.
+        for required_template_cls in required_loads:
+            requirement_signature = cast(
+                type[TemplateIntersectable], required_template_cls
+            )._templatey_signature
             ensure_prerender_tree(requirement_signature, preload)
 
         if target_resource is None:
@@ -384,6 +392,13 @@ class RenderEnvironment:
             # otherwise, they'll be stored in the cache with an incomplete
             # signature.
             ensure_slot_tree(requirement_signature, required_template_cls)
+
+        # Note: this needs to be separated out from the above loop, because
+        # it requires all of the resources to be loaded prior to execution.
+        for required_template_cls in required_loads:
+            requirement_signature = cast(
+                type[TemplateIntersectable], required_template_cls
+            )._templatey_signature
             ensure_prerender_tree(requirement_signature, preload)
 
         if target_resource is None:
