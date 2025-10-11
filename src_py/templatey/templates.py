@@ -290,9 +290,11 @@ class _DataclassKwargs(TypedDict, total=False):
     weakref_slot: bool
 
 
+@overload
+@docnote(DocnoteConfig(include_in_docs=False))
 @dataclass_transform(field_specifiers=(template_field, param, field, Field))
 def template[T: type](
-        parse_config: TemplateConfig,
+        config: TemplateConfig,
         template_resource_locator: object,
         /, *,
         loader: Annotated[
@@ -317,6 +319,36 @@ def template[T: type](
             ] = None,
         **dataclass_kwargs: Unpack[_DataclassKwargs]
         ) -> Callable[[T], T]:
+    """Deprecated signature using deprecated jack-of-all-trades
+    ``TemplateConfig`` instances.
+    """
+    ...
+
+
+@overload
+@docnote(DocnoteConfig(include_in_docs=False))
+@dataclass_transform(field_specifiers=(template_field, param, field, Field))
+def template[T: type](
+        template_resource_locator: object,
+        render_config: RenderConfig,
+        /,
+        *optional_configs: ParseConfig | EnvConfig,
+        **dataclass_kwargs: Unpack[_DataclassKwargs]
+        ) -> Callable[[T], T]:
+    """Constructs a template class."""
+    ...
+
+
+@dataclass_transform(field_specifiers=(template_field, param, field, Field))
+def template[T: type](
+        template_config_or_locator: TemplateConfig | object,
+        render_config_or_locator: RenderConfig | object,
+        /,
+        *optional_configs: ParseConfig | EnvConfig,
+        loader: AsyncTemplateLoader | SyncTemplateLoader | None = None,
+        segment_modifiers: Sequence[SegmentModifier] | None = None,
+        **dataclass_kwargs: Unpack[_DataclassKwargs]
+        ) -> Callable[[T], T]:
     """This both transforms the decorated class into a stdlib dataclass
     and declares it as a templatey template.
 
@@ -327,8 +359,43 @@ def template[T: type](
     free performance benefit. **If weakref support is required, be sure
     to pass ``weakref_slot=True``.
     """
-    if segment_modifiers is None:
-        segment_modifiers = []
+    if isinstance(template_config_or_locator, TemplateConfig):
+        legacy_config = template_config_or_locator
+        if segment_modifiers is not None:
+            segment_modifiers = tuple(segment_modifiers)
+
+        template_resource_locator = render_config_or_locator
+        render_config = RenderConfig(
+            variable_escaper=legacy_config.variable_escaper,
+            content_verifier=legacy_config.content_verifier)
+        parse_config = ParseConfig(
+            interpolator=legacy_config.interpolator,
+            segment_modifiers=segment_modifiers or ())
+        env_config = EnvConfig(loader=loader)
+
+    else:
+        template_resource_locator = template_config_or_locator
+
+        if not isinstance(render_config_or_locator, RenderConfig):
+            raise TypeError('Second arg must be render config!')
+
+        render_config = render_config_or_locator
+        parse_config: ParseConfig | None = None
+        env_config: EnvConfig | None = None
+
+        for optional_config in optional_configs:
+            if isinstance(optional_config, ParseConfig):
+                if parse_config is not None:
+                    raise TypeError('Cannot have duplicate parse configs!')
+                parse_config = optional_config
+
+            elif isinstance(optional_config, EnvConfig):
+                if env_config is not None:
+                    raise TypeError('Cannot have duplicate env configs!')
+                env_config = optional_config
+
+            else:
+                raise TypeError('*args must be parse or env configs!')
 
     # As per docs, we default to using slots, since it makes everything
     # faster
@@ -339,13 +406,16 @@ def template[T: type](
         make_template_definition,
         dataclass_kwargs=dataclass_kwargs,
         template_resource_locator=template_resource_locator,
-        template_config=parse_config,
-        segment_modifiers=segment_modifiers,
-        explicit_loader=loader)
+        render_config=render_config,
+        parse_config=parse_config,
+        env_config=env_config)
 
 
+# DEPRECATED. Use ``ParseConfig``, ``RenderConfig``, and ``EnvConfig``
+# instead.
+@docnote(DocnoteConfig(include_in_docs=False))
 @dataclass(frozen=True)
-class TemplateConfig[T: type, L: object]:
+class TemplateConfig:
     """Template configs specify how the template and its interpolated
     content should be processed.
     """
@@ -368,6 +438,70 @@ class TemplateConfig[T: type, L: object]:
             it allows, for example, to allowlist certain HTML tags.''')]
 
 
+@dataclass(frozen=True, kw_only=True)
+class ParseConfig:
+    """Parse configs specify how the loaded template text should be
+    parsed into a template resource. These can be used to modify all
+    segments of a template, change which interpolators to use, etc.
+    """
+    interpolator: Annotated[
+            NamedInterpolator,
+            Note('''The interpolator determines what characters are used for
+                performing interpolations within the template. They can be
+                escaped by repeating them, for example ``{{}}`` would be
+                a literal ``{}`` with a curly braces interpolator.''')
+        ] = NamedInterpolator.CURLY_BRACES
+    segment_modifiers: Annotated[
+            tuple[SegmentModifier, ...],
+            Note('''An ordered sequence of ``SegmentModifier`` instances
+                to apply to every literal string segment of the loaded
+                template text.
+
+                The modifiers will be applied in the order that they are
+                declared. The first modifier to match the segment will
+                short-circuit the remaining modifiers, regardless of
+                whether or not it applies any changes.''')
+        ] = ()
+
+
+@dataclass(frozen=True, kw_only=True)
+class RenderConfig:
+    """Render configs control the behavior of the templatey renderer.
+    These can be used to modify variable escaping, content verification,
+    etc. These are generally specific to the output format of the
+    template (for example, this might be html-specific).
+    """
+    variable_escaper: Annotated[
+        VariableEscaper,
+        Note('''Variables are always escaped. The variable escaper is
+            the callable responsible for performing that escaping. If you
+            don't need escaping, there are noop escapers within the prebaked
+            template configs that you can use for convenience.''')]
+    content_verifier: Annotated[
+        ContentVerifier,
+        Note('''Content isn't escaped, but it ^^is^^ verified. Content
+            verification is a simple process that either succeeds or fails;
+            it allows, for example, to allowlist certain HTML tags.''')]
+
+
+@dataclass(frozen=True, kw_only=True)
+class EnvConfig:
+    """Environment configs control the behavior of the render
+    environment. They can be used, for example, to specify and explicit
+    loader for a template, allowing templates to be packaged within a
+    library.
+    """
+    loader: Annotated[
+            AsyncTemplateLoader | SyncTemplateLoader | None,
+            Note('''Explicit template loaders can be passed to a template
+                instance to bypass the loader declared in the template
+                environment. This is primarily intended as a mechanism for
+                library developers to define redistributable templates as
+                part of their codebases, while not depending on the
+                template loader of the end user's codebase.''')
+        ] = None
+
+
 @dataclass_transform(field_specifiers=(template_field, param, field, Field))
 def make_template_definition[T: type](
         cls: T,
@@ -375,21 +509,26 @@ def make_template_definition[T: type](
         dataclass_kwargs: _DataclassKwargs,
         # Note: needs to be understandable by template loader
         template_resource_locator: object,
-        template_config: TemplateConfig,
-        segment_modifiers: Sequence[SegmentModifier],
-        explicit_loader: AsyncTemplateLoader | SyncTemplateLoader | None
+        render_config: RenderConfig,
+        parse_config: ParseConfig | None,
+        env_config: EnvConfig | None,
         ) -> T:
     """Programmatically creates a template definition. Converts the
     requested class into a dataclass, passing along ``dataclass_kwargs``
     to the dataclass constructor. Then performs some templatey-specific
     bookkeeping. Returns the resulting dataclass.
     """
+    if env_config is None:
+        explicit_loader = None
+    else:
+        explicit_loader = env_config.loader
+
     cls = dataclass(**dataclass_kwargs)(cls)
     cls._templatey_signature = TemplateSignature(
-        parse_config=template_config,
+        parse_config=parse_config or ParseConfig(),
+        render_config=render_config,
         resource_locator=template_resource_locator,
-        explicit_loader=explicit_loader,
-        segment_modifiers=tuple(segment_modifiers))
+        explicit_loader=explicit_loader)
 
     closure_anchor = _CLOSURE_ANCHORS.get(None)
     if closure_anchor is not None:
