@@ -5,6 +5,8 @@ to do it the other way and it was a massive headache.
 """
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field
 from typing import cast
@@ -15,6 +17,99 @@ from templatey._slot_tree import build_slot_tree
 from templatey._types import TemplateClass
 from templatey._types import TemplateIntersectable
 from templatey.parser import ParsedTemplateResource
+
+
+@dataclass(slots=True)
+class SignatureFinalizer:
+    preload: dict[TemplateClass, ParsedTemplateResource]
+    required_loads: set[TemplateClass]
+    target_resource: ParsedTemplateResource = field(init=False)
+
+
+@contextmanager
+def finalize_signature(
+        signature: TemplateSignature,
+        template_cls: TemplateClass,
+        *,
+        force_reload: bool = False,
+        preload: dict[TemplateClass, ParsedTemplateResource] | None,
+        parse_cache: dict[TemplateClass, ParsedTemplateResource],
+        ) -> Generator[SignatureFinalizer, None, None]:
+    """This contextmanager centralizes all the logic to finalize the
+    signature for a template during the loading process.
+    """
+    # As the name suggests, this also recursively finalizes all inclusions.
+    ensure_recursive_totality(signature, template_cls)
+
+    # Note that, because we need to potentially populate a preload, and
+    # not just the cache, we have to do this every time, even if the
+    # desired root template is already in the cache (because its
+    # requirements might not be).
+    # Three things:
+    # 1. we're prioritizing the case where preload is set, because that
+    #    happens during render calls, which need to be fast.
+    # 2. we're assuming that the total inclusions are significantly
+    #    smaller than the total template cache.
+    # 3. this isn't, strictly speaking, threadsafe, so if and when we add
+    #    support for finite caches, we'll need to wrap this into a lock.
+    #    Or something. It's not clear how this would work if someone wants
+    #    both sync and async loading at the same time.
+    required_loads: set[TemplateClass] = set()
+
+    # Note that we need a preload to construct prerender trees regardless
+    # of whether or not the caller cares about it.
+    if preload is None:
+        preload = {}
+
+    # Provision this in advance (with mutable args) so that we can update the
+    # target resource if we fetch it from the cache
+    finalizer = SignatureFinalizer(
+        preload=preload,
+        required_loads=required_loads)
+
+    # This is cleaner than a difference, since we need to handle both the
+    # excluded and included cases if we have a preload
+    for included_template_cls in signature.total_inclusions:
+        if force_reload:
+            required_loads.add(included_template_cls)
+        elif (
+            from_cache := parse_cache.get(included_template_cls)
+        ) is not None:
+            preload[included_template_cls] = from_cache
+            if included_template_cls is template_cls:
+                finalizer.target_resource = from_cache
+        else:
+            required_loads.add(included_template_cls)
+
+    yield finalizer
+
+    # Note: the finalizers need to be done separately, because the prerender
+    # tree finalizer requires all of the **resources** of all inclusions to be
+    # loaded prior to constructing the tree
+    for required_template_cls in required_loads:
+        requirement_signature = cast(
+            type[TemplateIntersectable], required_template_cls
+        )._templatey_signature
+
+        # Note that we have to do this on all of the requirements;
+        # otherwise, they'll be stored in the cache with an incomplete
+        # signature.
+        ensure_slot_tree(requirement_signature, required_template_cls)
+        ensure_prerender_tree(requirement_signature, preload)
+
+        parsed_resource = preload[required_template_cls]
+        if required_template_cls is template_cls:
+            finalizer.target_resource = parsed_resource
+
+        # Note that we only want to actually cache the resources if everything
+        # succeeded without error; otherwise, we could have partially-finalized
+        # signatures
+        parse_cache[required_template_cls] = parsed_resource
+
+    if not hasattr(finalizer, 'target_resource'):
+        raise RuntimeError(
+            'Impossible branch: target template missing from load results',
+            template_cls)
 
 
 @dataclass(slots=True)

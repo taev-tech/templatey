@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import itertools
 import operator
-from collections import defaultdict
 from collections.abc import Iterable
 from collections.abc import Sequence
 from copy import copy
@@ -377,6 +376,12 @@ class PrerenderTreeNode(list[PrerenderTreeRoute]):
             ) -> PrerenderTreeRoute:
         return self[self._index_by_slot_path[(slot_name, slot_type)]]
 
+    def __truediv__(self, other: SlotPath) -> PrerenderTreeNode:
+        """A utility method for tree traversal. Only intended for use
+        in debugging and testing; not optimized for production use.
+        """
+        return self.get_route_for(*other)[2]
+
     def rewrite_route_for(
             self,
             slot_name: str,
@@ -615,6 +620,16 @@ class SlotTreeNode(list[_SlotTreeRoute]):
         for _, _, parent_slot_tree_node in self.nodepath_parents:
             parent_slot_tree_node.nonrecursive_descendants.add(self.slot_cls)
 
+    def __truediv__(self, other: SlotPath) -> SlotTreeNode:
+        """A utility method for tree traversal. Only intended for use
+        in debugging and testing; not optimized for production use.
+        """
+        for slot_name, slot_cls, slot_node in self:
+            if (slot_name, slot_cls) == other:
+                return slot_node
+
+        raise LookupError('No such slot path!', other)
+
     def get_all_nonrecursive_inclusions(
             self
             ) -> Iterable[TemplateClass | DynamicTemplateClass]:
@@ -778,6 +793,9 @@ class SlotTreeNode(list[_SlotTreeRoute]):
             for template_cls in template_preload
             if cast(
                 type[TemplateIntersectable], template_cls
+            # Note: this is a little fragile; if you start abusing the preload
+            # to do things it isn't meant to do, you might break things (if
+            # the other templates haven't been loaded yet)
             )._templatey_signature.fieldset.dynamic_class_slot_names}
         target_slot_classes = inclusions_with_precall | inclusions_with_dynacls
 

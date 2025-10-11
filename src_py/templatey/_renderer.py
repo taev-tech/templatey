@@ -9,7 +9,6 @@ from collections.abc import Sequence
 from dataclasses import KW_ONLY
 from dataclasses import dataclass
 from dataclasses import field
-from pprint import pprint
 from typing import Annotated
 from typing import NamedTuple
 from typing import cast
@@ -150,26 +149,29 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
         elif isinstance(next_part, InterpolatedVariable):
             render_frame.part_index += 1
 
-            raw_val = render_frame.provenance.bind_variable(
-                next_part.name,
-                template_preload=template_preload,
-                error_collector=error_collector)
-            transformer = getattr(
-                render_frame.transformers, next_part.name, None)
-            if transformer is None:
-                transformed = raw_val
-            else:
-                transformed = cast(str | None, transformer(raw_val))
+            try:
+                raw_val = render_frame.provenance.bind_variable(
+                    next_part.name,
+                    template_preload=template_preload,
+                    error_collector=error_collector)
+                transformer = getattr(
+                    render_frame.transformers, next_part.name, None)
+                if transformer is None:
+                    transformed = raw_val
+                else:
+                    transformed = cast(str | None, transformer(raw_val))
 
-            if transformed is not None:
-                unescaped_val = _apply_format(
-                    transformed,
-                    next_part.config)
-                escaped_val = render_frame.parse_config.variable_escaper(
-                    unescaped_val)
-                # Note that variable interpolations don't support affixes!
-                to_join.append(escaped_val)
+                if transformed is not None:
+                    unescaped_val = _apply_format(
+                        transformed,
+                        next_part.config)
+                    escaped_val = render_frame.parse_config.variable_escaper(
+                        unescaped_val)
+                    # Note that variable interpolations don't support affixes!
+                    to_join.append(escaped_val)
 
+            except Exception as exc:
+                error_collector.append(exc)
 
         elif isinstance(next_part, InterpolatedContent):
             render_frame.part_index += 1
@@ -190,22 +192,27 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     render_frame.transformers))
 
             else:
-                transformer = getattr(
-                    render_frame.transformers, next_part.name, None)
-                if transformer is None:
-                    transformed = val_from_params
-                else:
-                    transformed = cast(
-                        str | None, transformer(val_from_params))
+                try:
+                    transformer = getattr(
+                        render_frame.transformers, next_part.name, None)
+                    if transformer is None:
+                        transformed = val_from_params
+                    else:
+                        transformed = cast(
+                            str | None, transformer(val_from_params))
 
-                # As usual, values of None are omitted
-                if transformed is not None:
-                    formatted_val = _apply_format(
-                        transformed,
-                        next_part.config)
-                    render_frame.parse_config.content_verifier(formatted_val)
-                    to_join.extend(
-                        next_part.config.apply_affix(formatted_val))
+                    # As usual, values of None are omitted
+                    if transformed is not None:
+                        formatted_val = _apply_format(
+                            transformed,
+                            next_part.config)
+                        render_frame.parse_config.content_verifier(
+                            formatted_val)
+                        to_join.extend(
+                            next_part.config.apply_affix(formatted_val))
+
+                except Exception as exc:
+                    error_collector.append(exc)
 
         # Slots get a little bit more complicated, but the general idea is
         # to append a stack frame for each depth level. We maintain the
@@ -406,7 +413,11 @@ type TemplateInjection = tuple[Provenance | None, TemplateParamsInstance]
 
 @dataclass(slots=True)
 class RenderContext:
-    """
+    """RenderContext instances are created for every rendering pass.
+    They contain all of the state necessary for rendering, and ensure
+    strong references exist to required template resources for the
+    lifetime of the rendering process, regardless of cache eviction
+    status.
     """
     template_preload: dict[TemplateClass, ParsedTemplateResource]
     function_precall: dict[PrecallCacheKey, FuncExecutionResult]
@@ -415,12 +426,12 @@ class RenderContext:
     def prep_render(
             self,
             root_template_instance: TemplateParamsInstance,
-            error_collector: ErrorCollector,
             ) -> Iterable[RenderEnvRequest]:
         """For the passed root template, populates the template_preload
         and function_precall until either all resources have been
         prepared, or it needs help from the render environment.
         """
+        error_collector = self.error_collector
         template_preload = self.template_preload
         function_precall = self.function_precall
 

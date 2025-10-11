@@ -64,7 +64,7 @@ class ParsedTemplateResource:
     # Note: this is included for convenience, so that the render environment
     # has easy access to all of the *args and **kwargs, so that they can be
     # tested against the signature of the actual render function during loading
-    function_calls: dict[str, tuple[InterpolatedFunctionCall]] = field(
+    function_calls: dict[str, tuple[InterpolatedFunctionCall, ...]] = field(
         compare=False)
     slots: dict[str, InterpolatedSlot] = field(compare=False)
 

@@ -25,9 +25,7 @@ from docnote import Note
 from templatey._bootstrapping import PARSED_EMPTY_TEMPLATE
 from templatey._bootstrapping import EmptyTemplate
 from templatey._error_collector import ErrorCollector
-from templatey._finalizers import ensure_prerender_tree
-from templatey._finalizers import ensure_recursive_totality
-from templatey._finalizers import ensure_slot_tree
+from templatey._finalizers import finalize_signature
 from templatey._renderer import FuncExecutionRequest
 from templatey._renderer import FuncExecutionResult
 from templatey._renderer import PrecallCacheKey
@@ -204,83 +202,51 @@ class RenderEnvironment:
             self._can_load_async,
             AsyncTemplateLoader)
 
-        # As the name suggests, this also recursively finalizes all inclusions.
-        ensure_recursive_totality(signature, template)
-
-        # Note that, because we need to potentially populate a preload, and
-        # not just the cache, we have to do this every time, even if the
-        # desired root template is already in the cache (because its
-        # requirements might not be).
-        # Three things:
-        # 1. we're prioritizing the case where preload is set, because that
-        #    happens during render calls, which need to be fast.
-        # 2. we're assuming that the total inclusions are significantly
-        #    smaller than the total template cache.
-        # 3. this isn't, strictly speaking, threadsafe, so if and when we add
-        #    support for finite caches, we'll need to wrap this into a lock.
-        #    Or something. It's not clear how this would work if someone wants
-        #    both sync and async loading at the same time.
-        required_loads: set[TemplateClass] = set()
-        target_resource: ParsedTemplateResource | None = None
-        if preload is None:
-            preload = {}
-
-        # This is cleaner than a difference, since we need to handle both the
-        # excluded and included cases if we have a preload
-        for included_template_cls in signature.total_inclusions:
-            if force_reload:
-                required_loads.add(included_template_cls)
-            elif (
-                from_cache := self._parsed_template_cache.get(
-                    included_template_cls)
-            ) is not None:
-                preload[included_template_cls] = from_cache
-                if included_template_cls is template:
-                    target_resource = from_cache
-            else:
-                required_loads.add(included_template_cls)
-
-        # We're doing this just in case everything was cached, and we never
-        # await a single loader.
+        # We're doing this sleep just in case everything was cached, and we
+        # never await a single loader.
         await anyio.sleep(0)
-        for required_template_cls in required_loads:
-            requirement_signature = cast(
-                type[TemplateIntersectable], required_template_cls
-            )._templatey_signature
+        with finalize_signature(
+            signature,
+            template,
+            force_reload=force_reload,
+            preload=preload,
+            parse_cache=self._parsed_template_cache
+        ) as sig_finalizer:
+            async with create_task_group() as task_group:
+                for required_template_cls in sig_finalizer.required_loads:
+                    task_group.start_soon(
+                        self._wrap_load_async,
+                        template_loader,
+                        required_template_cls,
+                        cast(
+                            type[TemplateIntersectable], required_template_cls
+                        )._templatey_signature,
+                        sig_finalizer.preload,
+                        override_validation_strictness)
 
-            # TODO: parallelize this!
-            requirement_text = await template_loader.load_async(
-                required_template_cls,
-                requirement_signature.resource_locator)
-            parsed_requirement_template = self._parse_and_cache(
-                required_template_cls,
-                requirement_signature,
-                requirement_text,
-                override_validation_strictness)
+        return sig_finalizer.target_resource
 
-            preload[required_template_cls] = parsed_requirement_template
-            if required_template_cls is template:
-                target_resource = parsed_requirement_template
+    async def _wrap_load_async(
+            self,
+            template_loader: AsyncTemplateLoader,
+            template_cls: TemplateClass,
+            template_signature: TemplateSignature,
+            preload: dict[TemplateClass, ParsedTemplateResource],
+            override_validation_strictness: bool | None
+            ) -> None:
+        """This wraps load_async so that we can parallelize the template
+        loading.
+        """
+        requirement_text = await template_loader.load_async(
+            template_cls,
+            template_signature.resource_locator)
+        parsed_requirement_template = self._parse_and_validate(
+            template_cls,
+            template_signature,
+            requirement_text,
+            override_validation_strictness)
 
-            # Note that we have to do this on all of the requirements;
-            # otherwise, they'll be stored in the cache with an incomplete
-            # signature.
-            ensure_slot_tree(requirement_signature, required_template_cls)
-
-        # Note: this needs to be separated out from the above loop, because
-        # it requires all of the resources to be loaded prior to execution.
-        for required_template_cls in required_loads:
-            requirement_signature = cast(
-                type[TemplateIntersectable], required_template_cls
-            )._templatey_signature
-            ensure_prerender_tree(requirement_signature, preload)
-
-        if target_resource is None:
-            raise RuntimeError(
-                'Impossible branch: target template missing from load results',
-                template)
-
-        return target_resource
+        preload[template_cls] = parsed_requirement_template
 
     def load_sync(
             self,
@@ -333,79 +299,30 @@ class RenderEnvironment:
             self._can_load_sync,
             SyncTemplateLoader)
 
-        # As the name suggests, this also recursively finalizes all inclusions.
-        ensure_recursive_totality(signature, template)
+        with finalize_signature(
+            signature,
+            template,
+            force_reload=force_reload,
+            preload=preload,
+            parse_cache=self._parsed_template_cache
+        ) as sig_finalizer:
+            for required_template_cls in sig_finalizer.required_loads:
+                requirement_signature = cast(
+                    type[TemplateIntersectable], required_template_cls
+                )._templatey_signature
+                requirement_text = template_loader.load_sync(
+                    required_template_cls,
+                    requirement_signature.resource_locator)
+                parsed_requirement_template = self._parse_and_validate(
+                    required_template_cls,
+                    requirement_signature,
+                    requirement_text,
+                    override_validation_strictness)
 
-        # Note that, because we need to potentially populate a preload, and
-        # not just the cache, we have to do this every time, even if the
-        # desired root template is already in the cache (because its
-        # requirements might not be).
-        # Three things:
-        # 1. we're prioritizing the case where preload is set, because that
-        #    happens during render calls, which need to be fast.
-        # 2. we're assuming that the total inclusions are significantly
-        #    smaller than the total template cache.
-        # 3. this isn't, strictly speaking, threadsafe, so if and when we add
-        #    support for finite caches, we'll need to wrap this into a lock.
-        #    Or something. It's not clear how this would work if someone wants
-        #    both sync and async loading at the same time.
-        required_loads: set[TemplateClass] = set()
-        target_resource: ParsedTemplateResource | None = None
-        # Note that we need a preload to construct prerender trees regardless
-        # of whether or not the caller cares about it.
-        if preload is None:
-            preload = {}
+                sig_finalizer.preload[required_template_cls] = \
+                    parsed_requirement_template
 
-        # This is cleaner than a difference, since we need to handle both the
-        # excluded and included cases if we have a preload
-        for included_template_cls in signature.total_inclusions:
-            if force_reload:
-                required_loads.add(included_template_cls)
-            elif (
-                from_cache := self._parsed_template_cache.get(
-                    included_template_cls)
-            ) is not None:
-                preload[included_template_cls] = from_cache
-                if included_template_cls is template:
-                    target_resource = from_cache
-            else:
-                required_loads.add(included_template_cls)
-
-        for required_template_cls in required_loads:
-            requirement_signature = cast(
-                type[TemplateIntersectable], required_template_cls
-            )._templatey_signature
-            requirement_text = template_loader.load_sync(
-                required_template_cls,
-                requirement_signature.resource_locator)
-            parsed_requirement_template = self._parse_and_cache(
-                required_template_cls,
-                requirement_signature,
-                requirement_text,
-                override_validation_strictness)
-
-            preload[required_template_cls] = parsed_requirement_template
-            if required_template_cls is template:
-                target_resource = parsed_requirement_template
-
-            # Note that we have to do this on all of the requirements;
-            # otherwise, they'll be stored in the cache with an incomplete
-            # signature.
-            ensure_slot_tree(requirement_signature, required_template_cls)
-
-        # Note: this needs to be separated out from the above loop, because
-        # it requires all of the resources to be loaded prior to execution.
-        for required_template_cls in required_loads:
-            requirement_signature = cast(
-                type[TemplateIntersectable], required_template_cls
-            )._templatey_signature
-            ensure_prerender_tree(requirement_signature, preload)
-
-        if target_resource is None:
-            raise RuntimeError(
-                'Impossible branch: target template missing from load results',
-                template)
-        return target_resource
+        return sig_finalizer.target_resource
 
     def _get_loader[T: AsyncTemplateLoader | SyncTemplateLoader](
             self,
@@ -433,7 +350,7 @@ class RenderEnvironment:
 
         return template_loader
 
-    def _parse_and_cache(
+    def _parse_and_validate(
             self,
             template_cls: TemplateClass,
             signature: TemplateSignature,
@@ -456,7 +373,6 @@ class RenderEnvironment:
             template_cls, signature, parsed_template_resource,
             strict_mode=strict_mode)
 
-        self._parsed_template_cache[template_cls] = parsed_template_resource
         return parsed_template_resource
 
     def _validate_env_functions(
@@ -565,10 +481,7 @@ class RenderEnvironment:
             template_preload=template_preload,
             function_precall=function_precall,
             error_collector=error_collector)
-        for env_request in render_ctx.prep_render(
-            template_instance,
-            error_collector
-        ):
+        for env_request in render_ctx.prep_render(template_instance):
             for root_to_load in env_request.to_load:
                 # Note that this will already set the root_to_load within the
                 # preload dict.
@@ -627,10 +540,7 @@ class RenderEnvironment:
             function_precall=function_precall,
             error_collector=error_collector)
 
-        for env_request in render_ctx.prep_render(
-            template_instance,
-            error_collector
-        ):
+        for env_request in render_ctx.prep_render(template_instance):
             async with create_task_group() as task_group:
                 for root_to_load in env_request.to_load:
                     # Note that this will already set the root_to_load within
