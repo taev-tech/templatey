@@ -1,8 +1,8 @@
+from templatey import Slot
+from templatey import Var
 from templatey.environments import RenderEnvironment
 from templatey.prebaked.loaders import DictTemplateLoader
 from templatey.prebaked.template_configs import html
-from templatey.templates import Slot
-from templatey.templates import Var
 from templatey.templates import template
 
 _ITERATION_COUNT = 10000000
