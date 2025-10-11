@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from typing import cast
 
-from templatey._error_collector import ErrorCollector
 from templatey._fields import NormalizedFieldset
 from templatey._finalizers import ensure_prerender_tree
 from templatey._finalizers import ensure_recursive_totality
 from templatey._finalizers import ensure_slot_tree
 from templatey._finalizers import finalize_signature
-from templatey._renderer import RenderContext
 from templatey._slot_tree import SlotTreeNode
 from templatey._types import Slot
 from templatey._types import TemplateClass
