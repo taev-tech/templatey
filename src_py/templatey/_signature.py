@@ -16,8 +16,8 @@ if typing.TYPE_CHECKING:
     from templatey._slot_tree import SlotTreeNode
     from templatey.environments import AsyncTemplateLoader
     from templatey.environments import SyncTemplateLoader
-    from templatey.templates import SegmentModifier
-    from templatey.templates import TemplateConfig
+    from templatey.templates import ParseConfig
+    from templatey.templates import RenderConfig
 
 type GroupedTemplateInvocations = dict[TemplateClass, list[Provenance]]
 type TemplateLookupByID = dict[TemplateInstanceID, TemplateParamsInstance]
@@ -32,15 +32,17 @@ class TemplateSignature:
     available at all points of the template's lifecycle.
     """
     # These are all available at template definition time and set then
-    parse_config: TemplateConfig
+    parse_config: ParseConfig
+    render_config: RenderConfig
     # Note: whatever kind of object this is, it needs to be understood by the
     # template loader defined in the template environment.
     # In theory we could make this a typevar, but in practice the overarching
     # ``TemplateIntersectable`` would need to have a typevar within a classvar,
     # which python doesn't currently support.
     resource_locator: object
-    segment_modifiers: tuple[SegmentModifier, ...]
     # Used primarily for libraries shipping redistributable templates
+    # TODO: this should be moved into an EnvConfig object here instead of
+    # extracted from it.
     explicit_loader: AsyncTemplateLoader | SyncTemplateLoader | None
 
     # These are all set during the template loading process, in stages, as

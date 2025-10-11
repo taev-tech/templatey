@@ -1,10 +1,10 @@
 import pytest
 
 from templatey.exceptions import BlockedContentValue
-from templatey.prebaked.template_configs import html_escaper
-from templatey.prebaked.template_configs import html_verifier
-from templatey.prebaked.template_configs import noop_escaper
-from templatey.prebaked.template_configs import noop_verifier
+from templatey.prebaked.configs import html_escaper
+from templatey.prebaked.configs import html_verifier
+from templatey.prebaked.configs import noop_escaper
+from templatey.prebaked.configs import noop_verifier
 
 
 class TestNoopEscaperAndVerifier:

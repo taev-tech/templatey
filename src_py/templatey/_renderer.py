@@ -35,7 +35,7 @@ from templatey.parser import InterpolationConfig
 from templatey.parser import ParsedTemplateResource
 from templatey.templates import ComplexContent
 from templatey.templates import InjectedValue
-from templatey.templates import TemplateConfig
+from templatey.templates import RenderConfig
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
         _RenderStackFrame(
             parts=root_template_preload.parts,
             part_count=root_template_preload.part_count,
-            parse_config=template_signature.parse_config,
+            render_config=template_signature.render_config,
             signature=template_signature,
             provenance=Provenance((
                 ProvenanceNode(
@@ -165,7 +165,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     unescaped_val = _apply_format(
                         transformed,
                         next_part.config)
-                    escaped_val = render_frame.parse_config.variable_escaper(
+                    escaped_val = render_frame.render_config.variable_escaper(
                         unescaped_val)
                     # Note that variable interpolations don't support affixes!
                     to_join.append(escaped_val)
@@ -187,7 +187,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     val_from_params,
                     render_ctx,
                     render_frame.provenance,
-                    render_frame.parse_config,
+                    render_frame.render_config,
                     next_part.config,
                     render_frame.transformers))
 
@@ -206,7 +206,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                         formatted_val = _apply_format(
                             transformed,
                             next_part.config)
-                        render_frame.parse_config.content_verifier(
+                        render_frame.render_config.content_verifier(
                             formatted_val)
                         to_join.extend(
                             next_part.config.apply_affix(formatted_val))
@@ -279,7 +279,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     instance=slot_instance,
                     parts=slot_instance_preload.parts,
                     part_count=slot_instance_preload.part_count,
-                    parse_config=slot_instance_signature.parse_config,
+                    render_config=slot_instance_signature.render_config,
                     signature=slot_instance_signature,
                     provenance=render_frame.provenance.with_appended(
                         ProvenanceNode(
@@ -305,7 +305,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                 render_frame.provenance,
                 next_part,
                 execution_result,
-                render_frame.parse_config,
+                render_frame.render_config,
                 error_collector)
             if nested_render_node is not None:
                 render_stack.append(nested_render_node)
@@ -334,7 +334,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     instance=injected_instance,
                     parts=injected_instance_preload.parts,
                     part_count=injected_instance_preload.part_count,
-                    parse_config=injected_instance_signature.parse_config,
+                    render_config=injected_instance_signature.render_config,
                     signature=injected_instance_signature,
                     # Note that the correct ``from_injection`` value is
                     # added when creating the current stack frame.
@@ -382,7 +382,7 @@ class _RenderStackFrame:
     """
     """
     instance: TemplateParamsInstance
-    parse_config: TemplateConfig
+    render_config: RenderConfig
     signature: TemplateSignature
     provenance: Provenance
     transformers: NamedTuple
@@ -523,7 +523,7 @@ def _render_complex_content(
         complex_content: ComplexContent,
         render_ctx: RenderContext,
         provenance: Provenance,
-        parse_config: TemplateConfig,
+        render_config: RenderConfig,
         interpolation_config: InterpolationConfig,
         transformers: NamedTuple,
         ) -> Iterable[str]:
@@ -549,13 +549,13 @@ def _render_complex_content(
                 unescaped_val = _apply_format(raw_val, content_segment.config)
 
                 if content_segment.use_variable_escaper:
-                    escaped_val = parse_config.variable_escaper(
+                    escaped_val = render_config.variable_escaper(
                         unescaped_val)
                 else:
                     escaped_val = unescaped_val
 
                 if content_segment.use_content_verifier:
-                    parse_config.content_verifier(escaped_val)
+                    render_config.content_verifier(escaped_val)
 
                 yield escaped_val
 
@@ -563,7 +563,7 @@ def _render_complex_content(
             elif content_segment is not None:
                 formatted_val = _apply_format(
                     content_segment, interpolation_config)
-                parse_config.content_verifier(formatted_val)
+                render_config.content_verifier(formatted_val)
                 yield formatted_val
 
     except Exception as exc:
@@ -576,7 +576,7 @@ def _build_render_frame_for_func_result(  # noqa: C901
         enclosing_provenance: Provenance,
         abstract_call: InterpolatedFunctionCall,
         execution_result: FuncExecutionResult,
-        template_config: TemplateConfig,
+        render_config: RenderConfig,
         error_collector: ErrorCollector
         ) -> _RenderStackFrame | None:
     """This constructs a _RenderNode for the given execution result and
@@ -593,10 +593,10 @@ def _build_render_frame_for_func_result(  # noqa: C901
         for index, result_part in enumerate(execution_result.retval):
             if isinstance(result_part, str):
                 resulting_parts.append(
-                    template_config.variable_escaper(result_part))
+                    render_config.variable_escaper(result_part))
             elif isinstance(result_part, InjectedValue):
                 resulting_parts.append(
-                    _coerce_injected_value(result_part, template_config))
+                    _coerce_injected_value(result_part, render_config))
             elif is_template_instance_xable(result_part):
                 injected_templates.append((index, result_part))
                 # This is just a placeholder; it gets overwritten in
@@ -627,7 +627,7 @@ def _build_render_frame_for_func_result(  # noqa: C901
         return _RenderStackFrame(
             parts=resulting_parts,
             part_count=len(resulting_parts),
-            parse_config=empty_template_signature.parse_config,
+            render_config=empty_template_signature.render_config,
             signature=empty_template_signature,
             # Note: keep this empty here, because we need the instance info
             # to match the injected template, and the whole idea here is to
@@ -642,7 +642,7 @@ def _build_render_frame_for_func_result(  # noqa: C901
         return _RenderStackFrame(
             parts=resulting_parts,
             part_count=len(resulting_parts),
-            parse_config=empty_template_signature.parse_config,
+            render_config=empty_template_signature.render_config,
             signature=empty_template_signature,
             provenance=Provenance(),
             instance=EMPTY_TEMPLATE_INSTANCE,
@@ -673,7 +673,7 @@ def _apply_format(raw_value, config: InterpolationConfig) -> str:
 
 def _coerce_injected_value(
         injected_value: InjectedValue,
-        template_config: TemplateConfig
+        render_config: RenderConfig
         ) -> str:
     """InjectedValue instances are used within the return value of
     environment functions and complex content to indicate that the
@@ -687,11 +687,11 @@ def _coerce_injected_value(
         injected_value.config)
 
     if injected_value.use_variable_escaper:
-        escapish_value = template_config.variable_escaper(unescaped_value)
+        escapish_value = render_config.variable_escaper(unescaped_value)
     else:
         escapish_value = unescaped_value
 
     if injected_value.use_content_verifier:
-        template_config.content_verifier(escapish_value)
+        render_config.content_verifier(escapish_value)
 
     return escapish_value
