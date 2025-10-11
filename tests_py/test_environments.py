@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from typing import cast
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -8,7 +7,11 @@ from unittest.mock import patch
 import anyio
 import pytest
 
+from templatey._bootstrapping import EMPTY_TEMPLATE_XABLE
+from templatey._finalizers import ensure_recursive_totality
 from templatey._provenance import Provenance
+from templatey._renderer import FuncExecutionRequest
+from templatey._renderer import FuncExecutionResult
 from templatey._types import Slot
 from templatey._types import TemplateIntersectable
 from templatey._types import Var
@@ -27,9 +30,6 @@ from templatey.parser import parse
 from templatey.prebaked.loaders import DictTemplateLoader
 from templatey.prebaked.loaders import InlineStringTemplateLoader
 from templatey.prebaked.template_configs import html
-from templatey.renderer import FuncExecutionRequest
-from templatey.renderer import FuncExecutionResult
-from templatey.templates import SegmentModifier
 from templatey.templates import template
 
 from templatey_testutils import fake_template_config
@@ -113,7 +113,7 @@ class TestRenderEnvironment:
 
     def test_load_sync_success(self):
         """The load_sync wrapper around must successfully invoke
-        _parse_and_cache on the happy case and return the result of
+        _parse_and_validate on the happy case and return the result of
         template loading.
         """
         @template(fake_template_config, 'fake')
@@ -125,12 +125,13 @@ class TestRenderEnvironment:
         loader.load_sync = loader_mock
 
         render_env = RenderEnvironment(template_loader=loader)
-        pnc_mock = Mock(spec=render_env._parse_and_cache)
-        with patch.object(render_env, '_parse_and_cache', pnc_mock):
+        pa_va_mock = Mock(spec=render_env._parse_and_validate)
+        pa_va_mock.return_value.function_calls = {}
+        with patch.object(render_env, '_parse_and_validate', pa_va_mock):
             result = render_env.load_sync(FakeTemplate)
         assert loader_mock.call_count == 1
-        assert pnc_mock.call_count == 1
-        assert result is pnc_mock.return_value
+        assert pa_va_mock.call_count == 1
+        assert result is pa_va_mock.return_value
 
     def test_load_sync_with_explicit_loader(self):
         """Load sync with an explicit loader must correctly bypass the
@@ -144,16 +145,17 @@ class TestRenderEnvironment:
             spec=_inline_loader.load_sync, wraps=_inline_loader.load_sync)
 
         render_env = RenderEnvironment(template_loader=loader)
-        pnc_mock = Mock(spec=render_env._parse_and_cache)
+        pa_va_mock = Mock(spec=render_env._parse_and_validate)
+        pa_va_mock.return_value.function_calls = {}
         with patch.object(
-            render_env, '_parse_and_cache', pnc_mock
+            render_env, '_parse_and_validate', pa_va_mock
         ), patch.object(_inline_loader, 'load_sync', expl_loader_mock):
             result = render_env.load_sync(InlineTemplate)
 
         assert env_loader_mock.call_count == 0
         assert expl_loader_mock.call_count == 1
-        assert pnc_mock.call_count == 1
-        assert result is pnc_mock.return_value
+        assert pa_va_mock.call_count == 1
+        assert result is pa_va_mock.return_value
 
     def test_load_sync_cache_hit(self):
         """The load_sync wrapper must successfully retrieve an
@@ -169,11 +171,12 @@ class TestRenderEnvironment:
 
         render_env = RenderEnvironment(template_loader=loader)
         render_env._parsed_template_cache[FakeTemplate] = Mock()
-        pnc_mock = Mock(spec=render_env._parse_and_cache)
-        with patch.object(render_env, '_parse_and_cache', pnc_mock):
+        pa_va_mock = Mock(spec=render_env._parse_and_validate)
+        pa_va_mock.return_value.function_calls = {}
+        with patch.object(render_env, '_parse_and_validate', pa_va_mock):
             result = render_env.load_sync(FakeTemplate)
         assert loader_mock.call_count == 0
-        assert pnc_mock.call_count == 0
+        assert pa_va_mock.call_count == 0
         assert result is render_env._parsed_template_cache[FakeTemplate]
 
     def test_load_sync_force_reload(self):
@@ -190,17 +193,18 @@ class TestRenderEnvironment:
 
         render_env = RenderEnvironment(template_loader=loader)
         render_env._parsed_template_cache[FakeTemplate] = Mock()
-        pnc_mock = Mock(spec=render_env._parse_and_cache)
-        with patch.object(render_env, '_parse_and_cache', pnc_mock):
+        pa_va_mock = Mock(spec=render_env._parse_and_validate)
+        pa_va_mock.return_value.function_calls = {}
+        with patch.object(render_env, '_parse_and_validate', pa_va_mock):
             result = render_env.load_sync(FakeTemplate, force_reload=True)
         assert loader_mock.call_count == 1
-        assert pnc_mock.call_count == 1
-        assert result is pnc_mock.return_value
+        assert pa_va_mock.call_count == 1
+        assert result is pa_va_mock.return_value
 
     @pytest.mark.anyio
     async def test_load_async_success(self):
         """The load_async wrapper around must successfully invoke
-        _parse_and_cache on the happy case and return the result of
+        _parse_and_validate on the happy case and return the result of
         template loading.
         """
         @template(fake_template_config, 'fake')
@@ -212,12 +216,13 @@ class TestRenderEnvironment:
         loader.load_async = loader_mock
 
         render_env = RenderEnvironment(template_loader=loader)
-        pnc_mock = Mock(spec=render_env._parse_and_cache)
-        with patch.object(render_env, '_parse_and_cache', pnc_mock):
+        pa_va_mock = Mock(spec=render_env._parse_and_validate)
+        pa_va_mock.return_value.function_calls = {}
+        with patch.object(render_env, '_parse_and_validate', pa_va_mock):
             result = await render_env.load_async(FakeTemplate)
         assert loader_mock.call_count == 1
-        assert pnc_mock.call_count == 1
-        assert result is pnc_mock.return_value
+        assert pa_va_mock.call_count == 1
+        assert result is pa_va_mock.return_value
 
     @pytest.mark.anyio
     async def test_load_async_with_explicit_loader(self):
@@ -232,16 +237,17 @@ class TestRenderEnvironment:
             spec=_inline_loader.load_async, wraps=_inline_loader.load_async)
 
         render_env = RenderEnvironment(template_loader=loader)
-        pnc_mock = Mock(spec=render_env._parse_and_cache)
+        pa_va_mock = Mock(spec=render_env._parse_and_validate)
+        pa_va_mock.return_value.function_calls = {}
         with patch.object(
-            render_env, '_parse_and_cache', pnc_mock
+            render_env, '_parse_and_validate', pa_va_mock
         ), patch.object(_inline_loader, 'load_async', expl_loader_mock):
             result = await render_env.load_async(InlineTemplate)
 
         assert env_loader_mock.call_count == 0
         assert expl_loader_mock.call_count == 1
-        assert pnc_mock.call_count == 1
-        assert result is pnc_mock.return_value
+        assert pa_va_mock.call_count == 1
+        assert result is pa_va_mock.return_value
 
     @pytest.mark.anyio
     async def test_load_async_cache_hit(self):
@@ -258,11 +264,12 @@ class TestRenderEnvironment:
 
         render_env = RenderEnvironment(template_loader=loader)
         render_env._parsed_template_cache[FakeTemplate] = Mock()
-        pnc_mock = Mock(spec=render_env._parse_and_cache)
-        with patch.object(render_env, '_parse_and_cache', pnc_mock):
+        pa_va_mock = Mock(spec=render_env._parse_and_validate)
+        pa_va_mock.return_value.function_calls = {}
+        with patch.object(render_env, '_parse_and_validate', pa_va_mock):
             result = await render_env.load_async(FakeTemplate)
         assert loader_mock.call_count == 0
-        assert pnc_mock.call_count == 0
+        assert pa_va_mock.call_count == 0
         assert result is render_env._parsed_template_cache[FakeTemplate]
 
     @pytest.mark.anyio
@@ -280,19 +287,21 @@ class TestRenderEnvironment:
 
         render_env = RenderEnvironment(template_loader=loader)
         render_env._parsed_template_cache[FakeTemplate] = Mock()
-        pnc_mock = Mock(spec=render_env._parse_and_cache)
-        with patch.object(render_env, '_parse_and_cache', pnc_mock):
+        pa_va_mock = Mock(spec=render_env._parse_and_validate)
+        pa_va_mock.return_value.function_calls = {}
+        with patch.object(render_env, '_parse_and_validate', pa_va_mock):
             result = await render_env.load_async(
                 FakeTemplate, force_reload=True)
         assert loader_mock.call_count == 1
-        assert pnc_mock.call_count == 1
-        assert result is pnc_mock.return_value
+        assert pa_va_mock.call_count == 1
+        assert result is pa_va_mock.return_value
 
     @patch('templatey.environments.parse', spec=parse)
-    def test_parse_and_cache_does_validation_and_cache(self, mock_parse):
+    def test_parse_and_validate_does_validation(self, mock_parse):
         """parse_and_cache must call into both template validation
-        functions and cache whatever result is given by the loader. It
-        must also, of course, call into parsing.
+        functions. It must also, of course, call into parsing.
+
+        It must not update the cache.
         """
         # Doesn't need to be right, just needs to be a dataclass instance
         mock_parse.return_value = ParsedTemplateResource(
@@ -318,8 +327,9 @@ class TestRenderEnvironment:
             spec=render_env._validate_env_functions)
         render_env._validate_template_signature = Mock(
             spec=render_env._validate_template_signature)
-        result = render_env._parse_and_cache(
-            cast(type[TemplateIntersectable], FakeTemplate),
+        result = render_env._parse_and_validate(
+            FakeTemplate,
+            EMPTY_TEMPLATE_XABLE._templatey_signature,
             template_text='foobar',
             override_validation_strictness=None)
 
@@ -327,70 +337,10 @@ class TestRenderEnvironment:
         # while applying modifiers
         assert result == mock_parse.return_value
         assert mock_parse.call_count == 1
-        assert FakeTemplate in render_env._parsed_template_cache
         assert render_env._validate_env_functions.call_count == 1
         assert render_env._validate_template_signature.call_count == 1
 
-    @patch('templatey.environments.parse', spec=parse)
-    def test_parse_and_cache_applies_modifiers(self, mock_parse):
-        """parse_and_cache must apply any modifiers on the template
-        to every string segment. They must be applied in order based on
-        the segment_modifiers sequence, and must short circuit on the
-        first match.
-        """
-        # Doesn't need to be right, just needs to be a dataclass instance
-        mock_parse.return_value = ParsedTemplateResource(
-            parts=(
-                LiteralTemplateString('foo ', part_index=0),
-                LiteralTemplateString('bar ', part_index=1),
-                LiteralTemplateString('baz', part_index=2)),
-            variable_names=frozenset(),
-            content_names=frozenset(),
-            slot_names=frozenset(),
-            function_names=frozenset(),
-            data_names=frozenset(),
-            function_calls={},
-            slots={})
-
-        seg_mods = [
-            SegmentModifier(
-                pattern=re.compile('f(o)(o)'),
-                modifier=
-                    lambda modifier_match: [
-                        f'mo{capture}'
-                        for capture in modifier_match.captures]),
-            SegmentModifier(
-                pattern=re.compile('foo|bar'),
-                modifier=lambda modifier_match: ['oof', 'rab'])]
-
-        @template(fake_template_config, 'fake', segment_modifiers=seg_mods)
-        class FakeTemplate:
-            foo: Var[str]
-
-        loader = DictTemplateLoader(templates={'fake': 'foobar'})
-        loader_mock = Mock(spec=loader.load_async, wraps=loader.load_async)
-        loader.load_async = loader_mock
-
-        render_env = RenderEnvironment(template_loader=loader)
-        render_env._validate_env_functions = Mock(
-            spec=render_env._validate_env_functions)
-        render_env._validate_template_signature = Mock(
-            spec=render_env._validate_template_signature)
-        result = render_env._parse_and_cache(
-            cast(type[TemplateIntersectable], FakeTemplate),
-            template_text='foobar',
-            override_validation_strictness=None)
-
-        assert result != mock_parse.return_value
-        assert result.part_count != mock_parse.return_value.part_count
-        assert result.parts == (
-            LiteralTemplateString('moo', part_index=0),
-            LiteralTemplateString('moo', part_index=1),
-            LiteralTemplateString(' ', part_index=2),
-            LiteralTemplateString('oof', part_index=3),
-            LiteralTemplateString('rab', part_index=4),
-            LiteralTemplateString(' ', part_index=5),
-            LiteralTemplateString('baz', part_index=6),)
+        assert FakeTemplate not in render_env._parsed_template_cache
 
     def test_validate_env_functions_matching_trivial(self):
         """_validate_env_functions must succeed if the template
@@ -410,7 +360,7 @@ class TestRenderEnvironment:
 
         render_env = RenderEnvironment(template_loader=loader)
         result = render_env._validate_env_functions(
-            cast(type[TemplateIntersectable], FakeTemplate),
+            FakeTemplate,
             ParsedTemplateResource(
                 parts=(LiteralTemplateString('foobar', part_index=0),),
                 variable_names=frozenset(),
@@ -443,7 +393,7 @@ class TestRenderEnvironment:
             env_functions=(href,),
             template_loader=loader)
         result = render_env._validate_env_functions(
-            cast(type[TemplateIntersectable], FakeTemplate),
+            FakeTemplate,
             ParsedTemplateResource(
                 parts=(
                     LiteralTemplateString('foobar', part_index=0),
@@ -480,7 +430,7 @@ class TestRenderEnvironment:
         render_env = RenderEnvironment(template_loader=loader)
         with pytest.raises(MismatchedTemplateEnvironment):
             render_env._validate_env_functions(
-            cast(type[TemplateIntersectable], FakeTemplate),
+                FakeTemplate,
                 ParsedTemplateResource(
                     parts=(LiteralTemplateString('foobar', part_index=0),),
                     variable_names=frozenset(),
@@ -516,7 +466,7 @@ class TestRenderEnvironment:
             template_loader=loader)
         with pytest.raises(MismatchedTemplateEnvironment):
             render_env._validate_env_functions(
-                cast(type[TemplateIntersectable], FakeTemplate),
+                FakeTemplate,
                 ParsedTemplateResource(
                     parts=(LiteralTemplateString('foobar', part_index=0),),
                     variable_names=frozenset(),
@@ -544,13 +494,18 @@ class TestRenderEnvironment:
             bar: Slot[FakeGlobalTemplate]
             baz: str
 
+        template_signature = cast(
+            type[TemplateIntersectable], FakeTemplate)._templatey_signature
+        ensure_recursive_totality(template_signature, FakeTemplate)
+
         loader = DictTemplateLoader(templates={'fake': 'foobar'})
         loader_mock = Mock(spec=loader.load_async, wraps=loader.load_async)
         loader.load_async = loader_mock
 
         render_env = RenderEnvironment(template_loader=loader)
         result = render_env._validate_template_signature(
-            cast(type[TemplateIntersectable], FakeTemplate),
+            FakeTemplate,
+            template_signature,
             ParsedTemplateResource(
                 parts=(
                     LiteralTemplateString('foobar', part_index=0),
@@ -583,6 +538,10 @@ class TestRenderEnvironment:
         class FakeTemplate:
             foo: Var[str]
 
+        template_signature = cast(
+            type[TemplateIntersectable], FakeTemplate)._templatey_signature
+        ensure_recursive_totality(template_signature, FakeTemplate)
+
         loader = DictTemplateLoader(templates={'fake': 'foobar'})
         loader_mock = Mock(spec=loader.load_async, wraps=loader.load_async)
         loader.load_async = loader_mock
@@ -590,7 +549,8 @@ class TestRenderEnvironment:
         render_env = RenderEnvironment(template_loader=loader)
         with pytest.raises(MismatchedTemplateSignature):
             render_env._validate_template_signature(
-            cast(type[TemplateIntersectable], FakeTemplate),
+                FakeTemplate,
+                template_signature,
                 ParsedTemplateResource(
                     parts=(
                         LiteralTemplateString('foobar', part_index=0),
@@ -616,6 +576,10 @@ class TestRenderEnvironment:
         class FakeTemplate:
             foo: Var[str]
 
+        template_signature = cast(
+            type[TemplateIntersectable], FakeTemplate)._templatey_signature
+        ensure_recursive_totality(template_signature, FakeTemplate)
+
         loader = DictTemplateLoader(templates={'fake': 'foobar'})
         loader_mock = Mock(spec=loader.load_async, wraps=loader.load_async)
         loader.load_async = loader_mock
@@ -623,7 +587,8 @@ class TestRenderEnvironment:
         render_env = RenderEnvironment(template_loader=loader)
         with pytest.raises(MismatchedTemplateSignature):
             render_env._validate_template_signature(
-                cast(type[TemplateIntersectable], FakeTemplate),
+                FakeTemplate,
+                template_signature,
                 ParsedTemplateResource(
                     parts=(LiteralTemplateString('foobar', part_index=0),),
                     variable_names=frozenset(),
@@ -644,13 +609,18 @@ class TestRenderEnvironment:
         class FakeTemplate:
             foo: Var[str]
 
+        template_signature = cast(
+            type[TemplateIntersectable], FakeTemplate)._templatey_signature
+        ensure_recursive_totality(template_signature, FakeTemplate)
+
         loader = DictTemplateLoader(templates={'fake': 'foobar'})
         loader_mock = Mock(spec=loader.load_async, wraps=loader.load_async)
         loader.load_async = loader_mock
 
         render_env = RenderEnvironment(template_loader=loader)
         result = render_env._validate_template_signature(
-            cast(type[TemplateIntersectable], FakeTemplate),
+            FakeTemplate,
+            template_signature,
             ParsedTemplateResource(
                 parts=(LiteralTemplateString('foobar', part_index=0),),
                 variable_names=frozenset(),
@@ -667,6 +637,7 @@ class TestRenderEnvironment:
     def test_execute_env_function_sync(self):
         """An env function execution must successfully execute.
         """
+        result_key = object()
         render_env = RenderEnvironment(
             env_functions=(func_with_starrings,),
             template_loader=DictTemplateLoader())
@@ -674,10 +645,13 @@ class TestRenderEnvironment:
             name='func_with_starrings',
             args=['foo'],
             kwargs={'bar': 'baz'},
-            result_key=object(),
+            result_key=result_key,
             provenance=Provenance())
+        precall = {}
 
-        result = render_env._execute_env_function_sync(request)
+        render_env._execute_env_function_sync(request, [], precall)
+        assert result_key in precall
+        result = precall[result_key]
         assert isinstance(result, FuncExecutionResult)
         assert result.retval == ('foo', 'bar', 'baz')
 
@@ -685,6 +659,7 @@ class TestRenderEnvironment:
     async def test_execute_env_function_async(self):
         """An env function execution must successfully execute.
         """
+        result_key = object()
         render_env = RenderEnvironment(
             env_functions=(func_with_starrings_async,),
             template_loader=DictTemplateLoader())
@@ -692,9 +667,12 @@ class TestRenderEnvironment:
             name='func_with_starrings_async',
             args=['foo'],
             kwargs={'bar': 'baz'},
-            result_key=object(),
+            result_key=result_key,
             provenance=Provenance())
+        precall = {}
 
-        result = await render_env._execute_env_function_async(request)
+        await render_env._execute_env_function_async(request, [], precall)
+        assert result_key in precall
+        result = precall[result_key]
         assert isinstance(result, FuncExecutionResult)
         assert result.retval == ('foo', 'bar', 'baz')

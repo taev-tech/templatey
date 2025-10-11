@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from decimal import Decimal
 from typing import cast
 from unittest.mock import Mock
@@ -5,28 +7,28 @@ from unittest.mock import patch
 
 import pytest
 
-from templatey._bootstrapping import EMPTY_TEMPLATE_INSTANCE
 from templatey._error_collector import ErrorCollector
+from templatey._finalizers import ensure_prerender_tree
+from templatey._finalizers import ensure_recursive_totality
+from templatey._finalizers import ensure_slot_tree
+from templatey._renderer import FuncExecutionResult
+from templatey._renderer import PrecallCacheKey
+from templatey._renderer import RenderContext
+from templatey._renderer import _apply_format
+from templatey._renderer import _coerce_injected_value
+from templatey._renderer import capture_traceback
+from templatey._renderer import render_driver
+from templatey._types import TemplateClass
+from templatey._types import TemplateIntersectable
+from templatey._types import Var
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import InterpolatedVariable
 from templatey.parser import InterpolationConfig
 from templatey.parser import LiteralTemplateString
 from templatey.parser import ParsedTemplateResource
-from templatey.parser import TemplateInstanceContentRef
-from templatey.parser import TemplateInstanceDataRef
-from templatey.parser import TemplateInstanceVariableRef
-from templatey.renderer import FuncExecutionResult
-from templatey.renderer import _apply_format
-from templatey.renderer import _capture_traceback
-from templatey.renderer import _coerce_injected_value
-from templatey.renderer import _ParamLookup
-from templatey.renderer import _recursively_coerce_func_execution_params
-from templatey.renderer import _RenderContext
-from templatey.renderer import render_driver
 from templatey.templates import InjectedValue
 from templatey.templates import TemplateConfig
-from templatey.templates import Var
 from templatey.templates import template
 
 from templatey_testutils import fake_template_config
@@ -63,39 +65,35 @@ class TestRenderDriver:
         class FakeTemplate:
             ...
 
-        def fake_prepopulate(render_context, *args, **kwargs):
-            # Maybe slightly helpful for the test, mostly just for type hints
-            assert isinstance(render_context, _RenderContext)
+        preload: dict[TemplateClass, ParsedTemplateResource] = {
+            FakeTemplate: ParsedTemplateResource(
+                parts=(
+                    LiteralTemplateString('foo', part_index=0),
+                    LiteralTemplateString('bar', part_index=1),
+                    LiteralTemplateString('baz', part_index=2),),
+                variable_names=frozenset(),
+                content_names=frozenset(),
+                slot_names=frozenset(),
+                slots={},
+                function_names=frozenset(),
+                data_names=frozenset(),
+                function_calls={})}
 
-            render_context.template_preload[FakeTemplate] = (
-                ParsedTemplateResource(
-                    parts=(
-                        LiteralTemplateString('foo', part_index=0),
-                        LiteralTemplateString('bar', part_index=1),
-                        LiteralTemplateString('baz', part_index=2),),
-                    variable_names=frozenset(),
-                    content_names=frozenset(),
-                    slot_names=frozenset(),
-                    slots={},
-                    function_names=frozenset(),
-                    data_names=frozenset(),
-                    function_calls={}))
-            return
-            yield
+        signature = cast(
+            type[TemplateIntersectable], FakeTemplate)._templatey_signature
+        ensure_recursive_totality(signature, FakeTemplate)
+        ensure_slot_tree(signature, FakeTemplate)
+        ensure_prerender_tree(signature, preload)
 
-        with patch.object(
-            _RenderContext,
-            'prepopulate',
-            side_effect=fake_prepopulate,
-            autospec=True,
-        ):
-            parts_output = []
-            error_collector = ErrorCollector()
-            __ = [
-                *render_driver(FakeTemplate(), parts_output, error_collector)]
+        render_ctx = RenderContext(
+            template_preload=preload,
+            function_precall={},
+            error_collector=ErrorCollector())
 
-        assert parts_output == ['foo', 'bar', 'baz']
-        assert not error_collector
+        result = render_driver(FakeTemplate(), render_ctx)
+
+        assert result == ['foo', 'bar', 'baz']
+        assert not render_ctx.error_collector
 
     def test_with_precall(self):
         """A template that includes interpolated function calls must
@@ -109,54 +107,51 @@ class TestRenderDriver:
         class FakeTemplate:
             ...
 
-        def fake_prepopulate(render_context, *args, **kwargs):
-            # Maybe slightly helpful for the test, mostly just for type hints
-            assert isinstance(render_context, _RenderContext)
+        fake_interpolated_call = InterpolatedFunctionCall(
+            call_args_exp=None,
+            call_kwargs_exp=None,
+            part_index=3,
+            name='fakefunc',
+            call_args=[],
+            call_kwargs={})
+        preload: dict[TemplateClass, ParsedTemplateResource] = {
+            FakeTemplate: ParsedTemplateResource(
+                parts=(
+                    LiteralTemplateString('foo', part_index=0),
+                    LiteralTemplateString('bar', part_index=1),
+                    LiteralTemplateString('baz', part_index=2),
+                    fake_interpolated_call),
+                variable_names=frozenset(),
+                content_names=frozenset(),
+                slot_names=frozenset(),
+                slots={},
+                function_names=frozenset({'fakefunc'}),
+                data_names=frozenset(),
+                function_calls={'fakefunc': (fake_interpolated_call,)})}
+        precall: dict[PrecallCacheKey, FuncExecutionResult] = {
+            fake_cache_key: FuncExecutionResult(
+                name='fakefunc', retval=('funky',), exc=None)}
 
-            fake_interpolated_call = InterpolatedFunctionCall(
-                call_args_exp=None,
-                call_kwargs_exp=None,
-                part_index=3,
-                name='fakefunc',
-                call_args=[],
-                call_kwargs={})
-            render_context.template_preload[FakeTemplate] = (
-                ParsedTemplateResource(
-                    parts=(
-                        LiteralTemplateString('foo', part_index=0),
-                        LiteralTemplateString('bar', part_index=1),
-                        LiteralTemplateString('baz', part_index=2),
-                        fake_interpolated_call),
-                    variable_names=frozenset(),
-                    content_names=frozenset(),
-                    slot_names=frozenset(),
-                    slots={},
-                    function_names=frozenset({'fakefunc'}),
-                    data_names=frozenset(),
-                    function_calls={'fakefunc': (fake_interpolated_call,)}))
-            render_context.function_precall[fake_cache_key] = (
-                FuncExecutionResult(
-                    name='fakefunc', retval=('funky',), exc=None))
-            return
-            yield
+        signature = cast(
+            type[TemplateIntersectable], FakeTemplate)._templatey_signature
+        ensure_recursive_totality(signature, FakeTemplate)
+        ensure_slot_tree(signature, FakeTemplate)
+        ensure_prerender_tree(signature, preload)
 
-        with patch.object(
-            _RenderContext,
-            'prepopulate',
-            side_effect=fake_prepopulate,
-            autospec=True,
-        ), patch(
-            'templatey.renderer._get_precall_cache_key',
+        render_ctx = RenderContext(
+            template_preload=preload,
+            function_precall=precall,
+            error_collector=ErrorCollector())
+
+        with patch(
+            'templatey._renderer.get_precall_cache_key',
             autospec=True,
             return_value=fake_cache_key
         ):
-            parts_output = []
-            error_collector = ErrorCollector()
-            __ = [
-                *render_driver(FakeTemplate(), parts_output, error_collector)]
+            result = render_driver(FakeTemplate(), render_ctx)
 
-        assert parts_output == ['foo', 'bar', 'baz', 'funky']
-        assert not error_collector
+        assert result == ['foo', 'bar', 'baz', 'funky']
+        assert not render_ctx.error_collector
 
     def test_with_multiple_exceptions(self):
         """When rendering a template with exceptions, the render driver
@@ -167,50 +162,43 @@ class TestRenderDriver:
         class FakeTemplate:
             var1: Var[str]
 
-        def fake_prepopulate(render_context, *args, **kwargs):
-            # Maybe slightly helpful for the test, mostly just for type hints
-            assert isinstance(render_context, _RenderContext)
+        preload: dict[TemplateClass, ParsedTemplateResource] = {
+            FakeTemplate: ParsedTemplateResource(
+                parts=(
+                    LiteralTemplateString('foo', part_index=0),
+                    LiteralTemplateString('bar', part_index=1),
+                    LiteralTemplateString('baz', part_index=2),
+                    InterpolatedVariable(
+                        part_index=3,
+                        name='var1',
+                        config=InterpolationConfig()),
+                    InterpolatedVariable(
+                        part_index=4,
+                        name='var1',
+                        config=InterpolationConfig()),),
+                variable_names=frozenset({'var1'}),
+                content_names=frozenset(),
+                slot_names=frozenset(),
+                slots={},
+                data_names=frozenset(),
+                function_names=frozenset(),
+                function_calls={})}
 
-            render_context.template_preload[FakeTemplate] = (
-                ParsedTemplateResource(
-                    parts=(
-                        LiteralTemplateString('foo', part_index=0),
-                        LiteralTemplateString('bar', part_index=1),
-                        LiteralTemplateString('baz', part_index=2),
-                        InterpolatedVariable(
-                            part_index=3,
-                            name='var1',
-                            config=InterpolationConfig()),
-                        InterpolatedVariable(
-                            part_index=4,
-                            name='var1',
-                            config=InterpolationConfig()),),
-                    variable_names=frozenset({'var1'}),
-                    content_names=frozenset(),
-                    slot_names=frozenset(),
-                    slots={},
-                    data_names=frozenset(),
-                    function_names=frozenset(),
-                    function_calls={}))
-            return
-            yield
+        signature = cast(
+            type[TemplateIntersectable], FakeTemplate)._templatey_signature
+        ensure_recursive_totality(signature, FakeTemplate)
+        ensure_slot_tree(signature, FakeTemplate)
+        ensure_prerender_tree(signature, preload)
 
-        with patch.object(
-            _RenderContext,
-            'prepopulate',
-            side_effect=fake_prepopulate,
-            autospec=True,
-        ):
-            parts_output = []
-            error_collector = ErrorCollector()
-            __ = [
-                *render_driver(
-                    FakeTemplate(var1='1var'),
-                    parts_output,
-                    error_collector)]
+        render_ctx = RenderContext(
+            template_preload=preload,
+            function_precall={},
+            error_collector=ErrorCollector())
 
-        assert parts_output == ['foo', 'bar', 'baz']
-        assert len(error_collector) == 2
+        result = render_driver(FakeTemplate(var1='1var'), render_ctx)
+
+        assert result == ['foo', 'bar', 'baz']
+        assert len(render_ctx.error_collector) == 2
 
 
 class TestRenderContext:
@@ -223,20 +211,20 @@ class TestRenderContext:
         class FakeTemplate:
             var1: Var[str]
 
-        ctx = _RenderContext(
+        ctx = RenderContext(
             template_preload={},
             function_precall={},
             error_collector=ErrorCollector())
 
-        request_count = 0
-        for request in ctx.prepopulate(FakeTemplate(var1='foo')):
-            request_count += 1
+        req_count = 0
+        for req in ctx.prep_render(FakeTemplate(var1='foo')):
+            req_count += 1
 
-            assert not request.to_execute
-            assert len(request.to_load) == 1
-            assert FakeTemplate in request.to_load
+            assert not req.to_execute
+            assert len(req.to_load) == 1
+            assert FakeTemplate in req.to_load
 
-            request.results_loaded[FakeTemplate] = ParsedTemplateResource(
+            req.template_preload[FakeTemplate] = ParsedTemplateResource(
                 parts=(),
                 variable_names=frozenset({'var1'}),
                 content_names=frozenset(),
@@ -246,7 +234,13 @@ class TestRenderContext:
                 function_names=frozenset(),
                 function_calls={})
 
-        assert request_count == 1
+            signature = cast(
+                type[TemplateIntersectable], FakeTemplate)._templatey_signature
+            ensure_recursive_totality(signature, FakeTemplate)
+            ensure_slot_tree(signature, FakeTemplate)
+            ensure_prerender_tree(signature, req.template_preload)
+
+        assert req_count == 1
 
     def test_template_with_func(self):
         """A template with one function call must generate two
@@ -257,7 +251,7 @@ class TestRenderContext:
         class FakeTemplate:
             var1: Var[str]
 
-        ctx = _RenderContext(
+        ctx = RenderContext(
             template_preload={},
             function_precall={},
             error_collector=ErrorCollector())
@@ -269,16 +263,16 @@ class TestRenderContext:
             call_args=[],
             call_kwargs={})
 
-        request_count = 0
-        for request in ctx.prepopulate(FakeTemplate(var1='foo')):
-            request_count += 1
+        req_count = 0
+        for req in ctx.prep_render(FakeTemplate(var1='foo')):
+            req_count += 1
 
-            if request.to_load:
-                assert not request.to_execute
-                assert len(request.to_load) == 1
-                assert FakeTemplate in request.to_load
+            if req.to_load:
+                assert not req.to_execute
+                assert len(req.to_load) == 1
+                assert FakeTemplate in req.to_load
 
-                request.results_loaded[FakeTemplate] = ParsedTemplateResource(
+                req.template_preload[FakeTemplate] = ParsedTemplateResource(
                     parts=(
                         InterpolatedVariable(
                             part_index=0,
@@ -294,22 +288,29 @@ class TestRenderContext:
                     function_names=frozenset({'fakefunc'}),
                     function_calls={'fakefunc': (fake_interpolated_call,)})
 
+                signature = cast(
+                    type[TemplateIntersectable], FakeTemplate
+                )._templatey_signature
+                ensure_recursive_totality(signature, FakeTemplate)
+                ensure_slot_tree(signature, FakeTemplate)
+                ensure_prerender_tree(signature, req.template_preload)
+
             else:
                 # Note that this is just because we're on the first level of
                 # function. Deeper nesting could result in both to_load and
-                # to_execute being defined on the same request.
-                assert not request.to_load
-                assert len(request.to_execute) == 1
-                exe_req, = request.to_execute
+                # to_execute being defined on the same req.
+                assert not req.to_load
+                assert len(req.to_execute) == 1
+                exe_req, = req.to_execute
 
-                request.results_executed[exe_req.result_key] = (
+                req.function_precall[exe_req.result_key] = (
                     FuncExecutionResult(
                         name=exe_req.name, retval=('foo'), exc=None))
 
-        assert request_count == 2
+        assert req_count == 2
 
     def test_template_with_func_with_expansion(self):
-        """Prepopulation with a function including arg/kwarg expansion
+        """prep_render with a function including arg/kwarg expansion
         must include those args and kwargs within the resulting
         call_args and call_kwargs for the execution request.
         """
@@ -317,7 +318,7 @@ class TestRenderContext:
         class FakeTemplate:
             var1: Var[str]
 
-        ctx = _RenderContext(
+        ctx = RenderContext(
             template_preload={},
             function_precall={},
             error_collector=ErrorCollector())
@@ -330,16 +331,16 @@ class TestRenderContext:
             call_kwargs={'bar': 'rab'})
 
         exe_req = None
-        request_count = 0
-        for request in ctx.prepopulate(FakeTemplate(var1='foo')):
-            request_count += 1
+        req_count = 0
+        for req in ctx.prep_render(FakeTemplate(var1='foo')):
+            req_count += 1
 
-            if request.to_load:
-                assert not request.to_execute
-                assert len(request.to_load) == 1
-                assert FakeTemplate in request.to_load
+            if req.to_load:
+                assert not req.to_execute
+                assert len(req.to_load) == 1
+                assert FakeTemplate in req.to_load
 
-                request.results_loaded[FakeTemplate] = ParsedTemplateResource(
+                req.template_preload[FakeTemplate] = ParsedTemplateResource(
                     parts=(fake_interpolated_call,),
                     variable_names=frozenset({'var1'}),
                     content_names=frozenset(),
@@ -349,109 +350,29 @@ class TestRenderContext:
                     function_names=frozenset({'fakefunc'}),
                     function_calls={'fakefunc': (fake_interpolated_call,)})
 
+                signature = cast(
+                    type[TemplateIntersectable], FakeTemplate
+                )._templatey_signature
+                ensure_recursive_totality(signature, FakeTemplate)
+                ensure_slot_tree(signature, FakeTemplate)
+                ensure_prerender_tree(signature, req.template_preload)
+
             else:
                 # Note that this is just because we're on the first level of
                 # function. Deeper nesting could result in both to_load and
-                # to_execute being defined on the same request.
-                assert not request.to_load
-                assert len(request.to_execute) == 1
-                exe_req, = request.to_execute
+                # to_execute being defined on the same req.
+                assert not req.to_load
+                assert len(req.to_execute) == 1
+                exe_req, = req.to_execute
 
-                request.results_executed[exe_req.result_key] = (
+                req.function_precall[exe_req.result_key] = (
                     FuncExecutionResult(
                         name=exe_req.name, retval=('foo'), exc=None))
 
-        assert request_count == 2
+        assert req_count == 2
         assert exe_req is not None
         assert exe_req.args == ('foo', 'oof')
         assert exe_req.kwargs == {'bar': 'rab', 'baz': 'zab'}
-
-
-class TestRecursivelyCoerceFuncExecutionParams:
-    """_recursively_coerce_func_execution_params()"""
-
-    def test_int(self):
-        """Integers must not break things, and must be returned
-        unchanged.
-        """
-        retval = _recursively_coerce_func_execution_params(
-            42,
-            template_instance=EMPTY_TEMPLATE_INSTANCE,
-            unescaped_vars=cast(_ParamLookup, {}),
-            unverified_content=cast(_ParamLookup, {}))
-        assert retval == 42
-
-    def test_string(self):
-        """Strings must return the string unchanged. In particular, they
-        must not be expanded into a list of substrings, each one char
-        long!
-        """
-        retval = _recursively_coerce_func_execution_params(
-            'foo',
-            template_instance=EMPTY_TEMPLATE_INSTANCE,
-            unescaped_vars=cast(_ParamLookup, {}),
-            unverified_content=cast(_ParamLookup, {}))
-        assert retval == 'foo'
-
-    def test_list_of_strings(self):
-        """List of strings must also be returned unchanged, other than
-        being coerced into a tuple.
-        """
-        retval = _recursively_coerce_func_execution_params(
-            ['foo', 'bar'],
-            template_instance=EMPTY_TEMPLATE_INSTANCE,
-            unescaped_vars=cast(_ParamLookup, {}),
-            unverified_content=cast(_ParamLookup, {}))
-        assert retval == ('foo', 'bar')
-
-    def test_dict_of_strings(self):
-        """Dict of strings must also be returned unchanged
-        """
-        retval = _recursively_coerce_func_execution_params(
-            {'foo': 'oof', 'bar': 'rab'},
-            template_instance=EMPTY_TEMPLATE_INSTANCE,
-            unescaped_vars=cast(_ParamLookup, {}),
-            unverified_content=cast(_ParamLookup, {}))
-        assert retval == {'foo': 'oof', 'bar': 'rab'}
-
-    @pytest.mark.parametrize(
-        'before,expected_after',
-        [
-            (TemplateInstanceDataRef('data1'), '1data'),
-            ([TemplateInstanceDataRef('data1')], ('1data',)),
-            ({'foo': TemplateInstanceDataRef('data1')}, {'foo': '1data'}),
-            (['beep', TemplateInstanceDataRef('data1')], ('beep', '1data')),
-            (TemplateInstanceContentRef('foo'), 'oof'),
-            ([TemplateInstanceContentRef('foo')], ('oof',)),
-            ({'foo': TemplateInstanceContentRef('foo')}, {'foo': 'oof'}),
-            (['beep', TemplateInstanceContentRef('foo')], ('beep', 'oof')),
-            (TemplateInstanceVariableRef('bar'), 'rab'),
-            ([TemplateInstanceVariableRef('bar')], ('rab',)),
-            ({'bar': TemplateInstanceVariableRef('bar')}, {'bar': 'rab'}),
-            (['beep', TemplateInstanceVariableRef('bar')], ('beep', 'rab')),
-            (
-                [
-                    TemplateInstanceContentRef('foo'),
-                    TemplateInstanceVariableRef('bar')],
-                ('oof', 'rab'))])
-    def test_recursive_nested_reference(self, before, expected_after):
-        """``TemplateInstanceContentRef``s and
-        ``TemplateInstanceVariableRef``s,
-        including those nested inside collections, must correctly be
-        coerced (dereferenced).
-        """
-        @template(fake_template_config, object())
-        class FakeTemplate:
-            data1: str
-
-        fake_unverified_content = cast(_ParamLookup, {'foo': 'oof'})
-        fake_unescaped_vars = cast(_ParamLookup, {'bar': 'rab'})
-        retval = _recursively_coerce_func_execution_params(
-            before,
-            template_instance=FakeTemplate(data1='1data'),
-            unverified_content=fake_unverified_content,
-            unescaped_vars=fake_unescaped_vars)
-        assert retval == expected_after
 
 
 _testdata_apply_format = [
@@ -480,7 +401,7 @@ class TestCaptureTraceback:
         exc = ZeroDivisionError('foo')
         assert exc.__traceback__ is None
         assert exc.__cause__ is None
-        re_exc = _capture_traceback(exc)
+        re_exc = capture_traceback(exc)
         assert re_exc is exc
         assert re_exc.__traceback__ is not None
         assert re_exc.__cause__ is None
@@ -493,14 +414,14 @@ class TestCaptureTraceback:
         context = ZeroDivisionError('bar')
         assert exc.__traceback__ is None
         assert exc.__cause__ is None
-        re_exc = _capture_traceback(exc, from_exc=context)
+        re_exc = capture_traceback(exc, from_exc=context)
         assert re_exc is exc
         assert re_exc.__traceback__ is not None
         assert re_exc.__cause__ is not None
 
 
 @patch(
-    'templatey.renderer._apply_format',
+    'templatey._renderer._apply_format',
     autospec=True,
     wraps=lambda raw_value, *_, **__: raw_value)
 class TestCoerceInjectedValue:

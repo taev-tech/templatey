@@ -111,6 +111,6 @@ jobs:
 
       - name: Run pytest
         shell: bash
-        run: set -eo pipefail && uv run pytest
+        run: set -eo pipefail && uv run pytest --run-integr8 --run-e2e
 
       # TODO: decide how to set up coverage

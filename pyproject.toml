@@ -67,6 +67,7 @@ testpaths = [
 ]
 addopts = "--import-mode=importlib"
 cache_dir = '/tmp/pytest_cache'
+python_files = ["*.test.py", "test*.py"]
 
 [tool.ruff]
 line-length = 79
