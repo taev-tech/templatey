@@ -22,7 +22,6 @@ from templatey._renderer import FuncExecutionRequest
 from templatey._renderer import TemplateInjection
 from templatey._renderer import get_precall_cache_key
 from templatey._types import DYNAMIC_TEMPLATE_CLASS
-from templatey._types import DynamicTemplateClass
 from templatey._types import TemplateClass
 from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
