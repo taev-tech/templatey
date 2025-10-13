@@ -24,7 +24,6 @@ async = [
 [dependency-groups]
 test = [
     "jinja2>=3.1.5",
-    "py-spy>=0.4.0",
     "pytest >= 8.1.1",
     "pytest-anyio>=0.0.0",
     "trio>=0.29.0",
@@ -37,6 +36,7 @@ lint = [
 ]
 
 repl = [
+    "py-spy>=0.4.0",
     "wat-inspector >= 0.3.2",
 ]
 
