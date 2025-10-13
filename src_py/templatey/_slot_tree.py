@@ -609,16 +609,8 @@ class SlotTreeNode(list[_SlotTreeRoute]):
     dynamic_slot_names: set[str]
     id_: int = field(default_factory=create_templatey_id)
 
-    # Both recursion fields are updated by children as they are created
-    nonrecursive_descendants: set[TemplateClass] = field(
-        default_factory=set, repr=False)
-
     # Proxy object for repr; see docnote for _ProxyDescriptor
     _children: list[_SlotTreeRoute] = field(init=False)
-
-    def __post_init__(self):
-        for _, _, parent_slot_tree_node in self.nodepath_parents:
-            parent_slot_tree_node.nonrecursive_descendants.add(self.slot_cls)
 
     def __truediv__(self, other: SlotPath) -> SlotTreeNode:
         """A utility method for tree traversal. Only intended for use
@@ -629,16 +621,6 @@ class SlotTreeNode(list[_SlotTreeRoute]):
                 return slot_node
 
         raise LookupError('No such slot path!', other)
-
-    def get_all_nonrecursive_inclusions(
-            self
-            ) -> Iterable[TemplateClass | DynamicTemplateClass]:
-        """This provides a view into the slot classes that
-        INCLUDES the current class.
-        """
-        for slot_cls in self.nonrecursive_descendants:
-            yield slot_cls
-        yield self.slot_cls
 
     def get_all_nodepath_inclusions(
             self,
