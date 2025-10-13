@@ -41,6 +41,8 @@ _TEST_PHASES: dict[None | str, int] = {
 
 
 def pytest_configure(config):
+    config.addinivalue_line(
+        'markers', 'benchmark: Mark test to run only during benchmarking')
     if not config.getoption('--run-e2e'):
         collect_ignore_glob.append('*.e2e.test.py')
     if not config.getoption('--run-integr8'):
