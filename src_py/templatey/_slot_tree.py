@@ -4,6 +4,8 @@ import itertools
 import operator
 from collections.abc import Iterable
 from collections.abc import Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import copy
 from dataclasses import KW_ONLY
 from dataclasses import InitVar
@@ -11,9 +13,9 @@ from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import fields
 from typing import Any
+from typing import Literal
 from typing import Self
 from typing import cast
-from weakref import ref
 
 from templatey._error_collector import ErrorCollector
 from templatey._provenance import Provenance
@@ -21,11 +23,11 @@ from templatey._provenance import ProvenanceNode
 from templatey._renderer import FuncExecutionRequest
 from templatey._renderer import TemplateInjection
 from templatey._renderer import get_precall_cache_key
-from templatey._types import DYNAMIC_TEMPLATE_CLASS
 from templatey._types import TemplateClass
 from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
 from templatey._types import create_templatey_id
+from templatey.exceptions import OvercomplicatedSlotTree
 from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import ParsedTemplateResource
 
@@ -596,15 +598,6 @@ class SlotTreeNode(list[_SlotTreeRoute]):
     slot_name: str
     slot_cls: TemplateClass
 
-    # Note that this does NOT include the current node
-    _nodepath_parents: tuple[tuple[*SlotPath, ref[SlotTreeNode]], ...] = field(
-        repr=False)
-
-    # These are always self-referential, so we use a weakref to avoid literally
-    # always needing complicated GC
-    first_encounters: dict[TemplateClass, ref[SlotTreeNode]] = field(
-        repr=False)
-
     dynamic_slot_names: set[str]
     id_: int = field(default_factory=create_templatey_id)
 
@@ -621,71 +614,6 @@ class SlotTreeNode(list[_SlotTreeRoute]):
 
         raise LookupError('No such slot path!', other)
 
-    def get_all_nodepath_inclusions(
-            self,
-            offset: SlotTreeNode | None = None
-            ) -> Iterable[tuple[*SlotPath, SlotTreeNode]]:
-        """Provides a view into all nodepath parents, plus the current
-        node, in order. If offset is passed, start immediately after the
-        passed node.
-        """
-        if offset is None:
-            yield from self.nodepath_parents
-        else:
-            offset_encountered = False
-            for slot_name, slot_cls, slot_tree_node in self.nodepath_parents:
-                if offset_encountered:
-                    yield (slot_name, slot_cls, slot_tree_node)
-
-                if slot_tree_node is offset:
-                    offset_encountered = True
-
-            if not offset_encountered:
-                raise ValueError(
-                    'Nodepath inclusion offset not found within parents!',
-                    self, offset)
-
-        yield (self.slot_name, self.slot_cls, self)
-
-    @property
-    def nodepath_parents(
-            self
-            ) -> tuple[tuple[*SlotPath, SlotTreeNode], ...]:
-        """This dereferences the nodepath parents.
-        """
-        # Note: the cast() here is because pyright doesn't pick up on the
-        # any() we do in just a second to fix it, and the explicit typecast
-        # is because otherwise pyright assigns the type too broadly and it
-        # no longer matches the return signature
-        retval: tuple[tuple[*SlotPath, SlotTreeNode], ...] = tuple(
-            (slot_name, slot_cls, cast(SlotTreeNode, noderef()))
-            for slot_name, slot_cls, noderef in self._nodepath_parents)
-        if any(segment[2] is None for segment in retval):
-            raise RuntimeError(
-                'Impossible branch: prematurely GCd nodepath parents!',
-                self)
-
-        return retval
-
-    def check_recursion(
-            self,
-            template_cls: TemplateClass
-            ) -> SlotTreeNode | None:
-        """Checks for the passed ``template_cls`` in the history. If
-        found, returns a it (after dereferencing). If not found, returns
-        None. If the reference is no longer valid, raises.
-        """
-        if template_cls in self.first_encounters:
-            node = self.first_encounters[template_cls]()
-            if node is None:
-                raise RuntimeError(
-                    'Impossible branch: prematurely GCd slot tree '
-                    + 'node!', self)
-
-            return node
-
-        return None
-
     def add_child(
             self,
             slot_name: str,
@@ -696,17 +624,7 @@ class SlotTreeNode(list[_SlotTreeRoute]):
         new_child = SlotTreeNode(
             slot_name=slot_name,
             slot_cls=slot_cls,
-            first_encounters={**self.first_encounters},
-            dynamic_slot_names=set(),
-            _nodepath_parents=(
-                *self._nodepath_parents, (slot_name, slot_cls, ref(self))),)
-
-        if (
-            slot_cls is not DYNAMIC_TEMPLATE_CLASS
-            and slot_cls not in new_child.first_encounters
-        ):
-            new_child.first_encounters[slot_cls] = ref(new_child)
-
+            dynamic_slot_names=set(),)
         self.append((slot_name, slot_cls, new_child))
         return new_child
 
@@ -715,15 +633,11 @@ class SlotTreeNode(list[_SlotTreeRoute]):
             cls,
             template_cls: TemplateClass,
             ) -> SlotTreeNode:
-        new_root = cls(
+        return cls(
             # Hacky, but... easier than needing to always check for Nones.
             slot_name='',
             slot_cls=template_cls,
-            first_encounters={},
-            dynamic_slot_names=set(),
-            _nodepath_parents=(),)
-        new_root.first_encounters[template_cls] = ref(new_root)
-        return new_root
+            dynamic_slot_names=set(),)
 
     def distill_prerender_tree(
             self,
@@ -735,35 +649,15 @@ class SlotTreeNode(list[_SlotTreeRoute]):
         slot classes nor env func calls) while keeping recursion loops
         intact.
 
-        Overview of the algorithm:
-        ++  iterate over the whole pending tree, from shallowest node to
-            deepest node. this allows you to guarantee that you're finding
-            the deepest recursions first.
-        ++  keep track of the ``postrecursion_descendants`` separately.
-            these get updated during the transformation.
-            probably do this as an {id: set[]} construct, that way it's
-            really easy to update.
-        ++  every time you encounter a pending node with recursion loop
-            sources:
-            ++  for each recursion loop source
-            ++  ``get_all_nodepath_inclusions`` (probably will want to add
-                an offset parameter) FROM the recursion target UNTIL the
-                recursion source (inclusive) -- ie, all intermediate nodes
-                within the recursion loop
-            ++  add the current pending node's postrecursion descendants
-                (plus the slot class for the pending node) to that
-                intermediate node's postrecursion descendants
-        ++  every time you encounter a node, add the nonrecursive descendants
-            to the postrecursion descendants to get the total descendants
-            for that node
-        ++  if the current slot class matches the target, include, regardless
-            of how many children it has.
-        ++  for each child:
-            ++  if the target slot class isn't included in the child's
-                total descendants, cull the child (including all its children)
-        ++  if the current slot class does not match the target, AND all
-            its children were culled, cull the current pending node in its
-            entirety
+        This is relatively simple. We first calculate a set of all
+        prerender-relevant template classes by checking the preload
+        for all function invocations and the template fieldsets for
+        dynamic classes. Then, we simply rely upon the already-existing
+        recursive totality for each node, and cull any nodes whose
+        total inclusions don't overlap with the prerender-relevant
+        template classes.
+
+        The only additional logic is just to preserve recursion loops.
         """
         inclusions_with_precall: set[TemplateClass] = {
             template_cls
@@ -944,31 +838,70 @@ class _SlotTreeBuilderFrame:
     """
     slot_cls: TemplateClass
     pending_slot_tree_node: SlotTreeNode
-    remaining_nested_slots: list[SlotPath]
     dynamic_slot_names: frozenset[str]
+
+    slotpaths: list[SlotPath]
+    slotpath_index: int = field(default=0, init=False)
+
+    first_encounters: dict[TemplateClass, SlotTreeNode] = field(
+        repr=False, kw_only=True)
+
+    def advance(self) -> SlotPath:
+        next_slot_path = self.slotpaths[self.slotpath_index]
+        self.slotpath_index += 1
+        return next_slot_path
+
+    @property
+    def exhausted(self) -> bool:
+        return self.slotpath_index >= len(self.slotpaths)
+
+    def __post_init__(self):
+        # Maybe a bit redundant, but also very defensive
+        if self.slot_cls not in self.first_encounters:
+            self.first_encounters[self.slot_cls] = self.pending_slot_tree_node
 
     @classmethod
     def from_slot_cls(
             cls,
             slot_cls: TemplateClass,
             pending_slot_tree_node: SlotTreeNode,
+            *,
+            first_encounters: dict[TemplateClass, SlotTreeNode] | None = None
             ) -> _SlotTreeBuilderFrame:
         """Constructs a new slot tree builder frame for the passed
         template class. **Note that the pending node is for the passed
         slot_cls!**
         """
+        if first_encounters is None:
+            first_encounters = {slot_cls: pending_slot_tree_node}
+
         fieldset = cast(
             type[TemplateIntersectable], slot_cls
         )._templatey_signature.fieldset
         return cls(
             slot_cls=slot_cls,
             pending_slot_tree_node=pending_slot_tree_node,
-            remaining_nested_slots=list(fieldset.slotpaths),
-            dynamic_slot_names=fieldset.dynamic_class_slot_names)
+            slotpaths=list(fieldset.slotpaths),
+            dynamic_slot_names=fieldset.dynamic_class_slot_names,
+            first_encounters=first_encounters)
 
-    @property
-    def exhausted(self) -> bool:
-        return not self.remaining_nested_slots
+    def make_child(
+            self,
+            slot_cls: TemplateClass,
+            pending_slot_tree_node: SlotTreeNode
+            ) -> _SlotTreeBuilderFrame:
+        """Creates a child frame, correctly handling the first
+        encounters for you.
+        """
+        new_first_encounters: dict[TemplateClass, SlotTreeNode] = {
+            **self.first_encounters}
+        if slot_cls not in new_first_encounters:
+            new_first_encounters[slot_cls] = pending_slot_tree_node
+
+        return self.from_slot_cls(
+            slot_cls,
+            pending_slot_tree_node,
+            first_encounters=new_first_encounters)
 
 
 def build_slot_tree(
@@ -976,13 +909,29 @@ def build_slot_tree(
         ) -> SlotTreeNode:
     """
     """
+    complexity_limiter = _SLOT_TREE_COMPLEXITY_LIMITER.get()
+    stack_depth_limit = complexity_limiter.stack_depth_limit
+    node_count_limit = complexity_limiter.node_count_limit
+
     # First we need to build up the pending slot tree, which contains all of
     # the nested template classes with no filtering or culling
     root_node = SlotTreeNode.make_root(template_cls)
     stack: list[_SlotTreeBuilderFrame] = [
         _SlotTreeBuilderFrame.from_slot_cls(template_cls, root_node)]
+    node_count = 1
 
     while stack:
+        if len(stack) > stack_depth_limit:
+            raise OvercomplicatedSlotTree(
+                'Slot tree stack depth limit exceeded!',
+                template_cls,
+                partial_slot_tree=root_node)
+        if node_count > node_count_limit:
+            raise OvercomplicatedSlotTree(
+                'Slot tree node count limit exceeded!',
+                template_cls,
+                partial_slot_tree=root_node)
+
         frame = stack[-1]
         if frame.exhausted:
             stack.pop()
@@ -995,7 +944,7 @@ def build_slot_tree(
                 frame.dynamic_slot_names)
             continue
 
-        nested_slot_name, nested_slot_cls = frame.remaining_nested_slots.pop()
+        nested_slot_name, nested_slot_cls = frame.advance()
 
         # In the simple recursion case -- a template defines a slot of its
         # own class -- we can immediately create a reference loop without
@@ -1013,9 +962,7 @@ def build_slot_tree(
         # a slot of an already-encountered class -- we just need to retrieve
         # the previous node.
         elif (
-            first_encounter
-                := frame.pending_slot_tree_node.check_recursion(
-                    nested_slot_cls)
+            first_encounter := frame.first_encounters.get(nested_slot_cls)
         ) is not None:
             mutually_recursive_slot_route = (
                 nested_slot_name,
@@ -1026,10 +973,41 @@ def build_slot_tree(
         # In the non-recursive case, we need to descend deeper into the
         # dependency graph.
         else:
+            node_count += 1
             next_node = frame.pending_slot_tree_node.add_child(
                 nested_slot_name, nested_slot_cls)
-            next_frame = _SlotTreeBuilderFrame.from_slot_cls(
-                nested_slot_cls, next_node)
+            next_frame = frame.make_child(nested_slot_cls, next_node)
             stack.append(next_frame)
 
     return root_node
+
+
+@contextmanager
+def set_complexity_limiter(limiter: SlotTreeComplexityLimiter | Literal[True]):
+    """Sets the complexity limiter, if one is passed. If none is passed,
+    this is effectively a null context.
+    """
+    if limiter is True:
+        yield
+    else:
+        ctx_token = _SLOT_TREE_COMPLEXITY_LIMITER.set(limiter)
+        try:
+            yield
+        finally:
+            _SLOT_TREE_COMPLEXITY_LIMITER.reset(ctx_token)
+
+
+@dataclass(frozen=True, slots=True)
+class SlotTreeComplexityLimiter:
+    stack_depth_limit: int
+    node_count_limit: int
+
+
+_SLOT_TREE_COMPLEXITY_LIMITER: ContextVar[SlotTreeComplexityLimiter] = \
+    ContextVar(
+        '_SLOT_TREE_COMPLEXITY_LIMITER',
+        # This particular default is only used in testing, and is separate
+        # from the defaults used by the render environment.
+        default=SlotTreeComplexityLimiter(  # noqa: B039
+            stack_depth_limit=10,
+            node_count_limit=100))

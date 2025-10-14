@@ -33,6 +33,8 @@ from templatey._renderer import RenderContext
 from templatey._renderer import TemplateInjection
 from templatey._renderer import render_driver
 from templatey._signature import TemplateSignature
+from templatey._slot_tree import SlotTreeComplexityLimiter
+from templatey._slot_tree import set_complexity_limiter
 from templatey._types import TemplateClass
 from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
@@ -51,6 +53,10 @@ EnvFunction = Callable[
     ..., Sequence[str | TemplateParamsInstance | InjectedValue]]
 EnvFunctionAsync = Callable[
     ..., Awaitable[Sequence[str | TemplateParamsInstance | InjectedValue]]]
+
+DEFAULT_SLOT_TREE_COMPLEXITY_LIMITER = SlotTreeComplexityLimiter(
+    stack_depth_limit=100,
+    node_count_limit=10**4)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,19 +107,37 @@ class RenderEnvironment:
     _has_loaded_any_template: bool
     _template_loader: SyncTemplateLoader | AsyncTemplateLoader
     strict_interpolation_validation: bool
+    # We use this to prevent unbounded (or nearly so) iteration when building
+    # slot trees
+    slot_tree_complexity_limiter: SlotTreeComplexityLimiter | Literal[True]
 
     def __init__(
             self,
             template_loader: SyncTemplateLoader | AsyncTemplateLoader,
             env_functions:
                 Optional[Iterable[EnvFunction | EnvFunctionAsync]] = None,
+                *,
             # If True, this will make sure that the template interface exactly
             # matches the template text. If False, this will just make sure
             # that the template interface is at least sufficient for the
             # template text.
-            strict_interpolation_validation: bool = True):
+            strict_interpolation_validation: bool = True,
+            slot_tree_complexity_limiter: Annotated[
+                    SlotTreeComplexityLimiter | Literal[True],
+                    Note('''If desired, you can use this to adjust the
+                        allowable limits before a template fails to load. Note
+                        that complicated slot trees can have a large impact on
+                        the maximum template load time. You are much better off
+                        using ``DynamicClassSlot`` annotations than raising
+                        this limit.
+
+                        Setting this explicitly to ``True`` will result in the
+                        (much more restrictive) testing defaults to be
+                        applied.''')
+                ] = DEFAULT_SLOT_TREE_COMPLEXITY_LIMITER):
         self.strict_interpolation_validation = strict_interpolation_validation
         self._has_loaded_any_template = False
+        self.slot_tree_complexity_limiter = slot_tree_complexity_limiter
 
         self._env_functions = {}
         if env_functions is not None:
@@ -205,7 +229,9 @@ class RenderEnvironment:
         # We're doing this sleep just in case everything was cached, and we
         # never await a single loader.
         await anyio.sleep(0)
-        with finalize_signature(
+        with set_complexity_limiter(
+            self.slot_tree_complexity_limiter
+        ), finalize_signature(
             signature,
             template,
             force_reload=force_reload,
@@ -299,7 +325,9 @@ class RenderEnvironment:
             self._can_load_sync,
             SyncTemplateLoader)
 
-        with finalize_signature(
+        with set_complexity_limiter(
+            self.slot_tree_complexity_limiter
+        ), finalize_signature(
             signature,
             template,
             force_reload=force_reload,
