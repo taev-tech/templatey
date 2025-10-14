@@ -1,3 +1,11 @@
+from __future__ import annotations
+
+import typing
+
+if typing.TYPE_CHECKING:
+    from templatey._slot_tree import SlotTreeNode
+
+
 class TemplateyException(Exception):
     """Base class for all templatey exceptions."""
 
@@ -51,10 +59,30 @@ class MismatchedTemplateSignature(InvalidTemplate):
     """
 
 
-class UnresolvedForwardReference(Exception):
-    """Raised when you attempt to render a template containing a forward
-    reference that was still unresolvable at render time.
+class OvercomplicatedSlotTree(InvalidTemplate):
+    """Raised when loading templates if the template's slot tree is
+    too complicated, as determined by the slot tree complexity limiter
+    set on the render environment.
+
+    This is generally an indication of too much mutual recursion in the
+    slot tree, which can quickly result in explosive combinatorics.
+    Rather than allowing the slot tree to grow to multiple megabytes or
+    gigabytes in size, taking multiple minutes to generate, we instead
+    raise this error.
+
+    If you find yourself encountering this error in situations where
+    the slot tree complexity is unavoidable, you can either raise the
+    limits on the render environment, or -- far preferrably -- simply
+    replace the most combinatorically expensive slots with
+    ``DynamicClassSlot`` annotations instead of explicit slots. This
+    will result in a very slight penalty in render speed, but
+    dramatically reduce template load times.
     """
+    partial_slot_tree: SlotTreeNode
+
+    def __init__(self, *args, partial_slot_tree: SlotTreeNode, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.partial_slot_tree = partial_slot_tree
 
 
 class IncompleteTemplateParams(TypeError):

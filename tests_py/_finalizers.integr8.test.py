@@ -5,12 +5,15 @@ from dataclasses import dataclass
 from dataclasses import field
 from textwrap import dedent
 
+import pytest
+
 from templatey import Content
 from templatey import Slot
 from templatey import Var
 from templatey import param
 from templatey import template
 from templatey.environments import RenderEnvironment
+from templatey.exceptions import OvercomplicatedSlotTree
 from templatey.prebaked.loaders import DictTemplateLoader
 from templatey.prebaked.loaders import InlineStringTemplateLoader
 from templatey.prebaked.template_configs import html
@@ -118,7 +121,7 @@ class _CrossrefSummaryTemplateBase:
 class LinkableCrossrefSummaryTemplate(_CrossrefSummaryTemplateBase):
     # Note: the error here is because it's not understanding our use of
     # ``param()`` in the base class
-    target: Var[str]
+    target: Var[str]  # type: ignore
 
 
 @template(
@@ -360,16 +363,18 @@ class TestFinalization:
     """
 
     def test_finalization_via_load(self):
-        """Loading a complicated template must not cause unreasonable
-        delays for nontrivial template trees.
+        """Loading templates must not cause unreasonable
+        delays for overcomplicated template trees, but instead raise.
         """
         render_env = RenderEnvironment(
             env_functions=(),
             template_loader=DictTemplateLoader(
-                templates={}))
+                templates={}),
+            slot_tree_complexity_limiter=True)
 
         before = time.monotonic()
-        render_env.load_sync(ModuleSummaryTemplate)
+        with pytest.raises(OvercomplicatedSlotTree):
+            render_env.load_sync(ModuleSummaryTemplate)
         after = time.monotonic()
 
         # This is an arbitrary threshold, but... seems reasonable. And by

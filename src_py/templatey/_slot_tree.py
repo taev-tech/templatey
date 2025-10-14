@@ -4,6 +4,8 @@ import itertools
 import operator
 from collections.abc import Iterable
 from collections.abc import Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import copy
 from dataclasses import KW_ONLY
 from dataclasses import InitVar
@@ -11,6 +13,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import fields
 from typing import Any
+from typing import Literal
 from typing import Self
 from typing import cast
 
@@ -24,6 +27,7 @@ from templatey._types import TemplateClass
 from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
 from templatey._types import create_templatey_id
+from templatey.exceptions import OvercomplicatedSlotTree
 from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import ParsedTemplateResource
 
@@ -905,13 +909,29 @@ def build_slot_tree(
         ) -> SlotTreeNode:
     """
     """
+    complexity_limiter = _SLOT_TREE_COMPLEXITY_LIMITER.get()
+    stack_depth_limit = complexity_limiter.stack_depth_limit
+    node_count_limit = complexity_limiter.node_count_limit
+
     # First we need to build up the pending slot tree, which contains all of
     # the nested template classes with no filtering or culling
     root_node = SlotTreeNode.make_root(template_cls)
     stack: list[_SlotTreeBuilderFrame] = [
         _SlotTreeBuilderFrame.from_slot_cls(template_cls, root_node)]
+    node_count = 1
 
     while stack:
+        if len(stack) > stack_depth_limit:
+            raise OvercomplicatedSlotTree(
+                'Slot tree stack depth limit exceeded!',
+                template_cls,
+                partial_slot_tree=root_node)
+        if node_count > node_count_limit:
+            raise OvercomplicatedSlotTree(
+                'Slot tree node count limit exceeded!',
+                template_cls,
+                partial_slot_tree=root_node)
+
         frame = stack[-1]
         if frame.exhausted:
             stack.pop()
@@ -953,9 +973,41 @@ def build_slot_tree(
         # In the non-recursive case, we need to descend deeper into the
         # dependency graph.
         else:
+            node_count += 1
             next_node = frame.pending_slot_tree_node.add_child(
                 nested_slot_name, nested_slot_cls)
             next_frame = frame.make_child(nested_slot_cls, next_node)
             stack.append(next_frame)
 
     return root_node
+
+
+@contextmanager
+def set_complexity_limiter(limiter: SlotTreeComplexityLimiter | Literal[True]):
+    """Sets the complexity limiter, if one is passed. If none is passed,
+    this is effectively a null context.
+    """
+    if limiter is True:
+        yield
+    else:
+        ctx_token = _SLOT_TREE_COMPLEXITY_LIMITER.set(limiter)
+        try:
+            yield
+        finally:
+            _SLOT_TREE_COMPLEXITY_LIMITER.reset(ctx_token)
+
+
+@dataclass(frozen=True, slots=True)
+class SlotTreeComplexityLimiter:
+    stack_depth_limit: int
+    node_count_limit: int
+
+
+_SLOT_TREE_COMPLEXITY_LIMITER: ContextVar[SlotTreeComplexityLimiter] = \
+    ContextVar(
+        '_SLOT_TREE_COMPLEXITY_LIMITER',
+        # This particular default is only used in testing, and is separate
+        # from the defaults used by the render environment.
+        default=SlotTreeComplexityLimiter(  # noqa: B039
+            stack_depth_limit=10,
+            node_count_limit=100))
