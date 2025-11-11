@@ -7,8 +7,8 @@ from dataclasses import fields
 
 from templatey._provenance import Provenance
 from templatey._types import TemplateClass
-from templatey._types import TemplateInstanceID
-from templatey._types import TemplateParamsInstance
+from templatey._types import TemplateClassInstance
+from templatey._types import TemplateClassInstanceID
 
 if typing.TYPE_CHECKING:
     from templatey._fields import NormalizedFieldset
@@ -20,7 +20,7 @@ if typing.TYPE_CHECKING:
     from templatey.templates import RenderConfig
 
 type GroupedTemplateInvocations = dict[TemplateClass, list[Provenance]]
-type TemplateLookupByID = dict[TemplateInstanceID, TemplateParamsInstance]
+type TemplateLookupByID = dict[TemplateClassInstanceID, TemplateClassInstance]
 
 
 @dataclass(slots=True, kw_only=True)

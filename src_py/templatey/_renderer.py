@@ -23,8 +23,8 @@ from templatey._provenance import Provenance
 from templatey._provenance import ProvenanceNode
 from templatey._signature import TemplateSignature
 from templatey._types import TemplateClass
+from templatey._types import TemplateClassInstance
 from templatey._types import TemplateIntersectable
-from templatey._types import TemplateParamsInstance
 from templatey._types import is_template_instance_xable
 from templatey.exceptions import TemplateFunctionFailure
 from templatey.parser import InterpolatedContent
@@ -57,10 +57,10 @@ class FuncExecutionResult:
     """
     # Note: must match signature from TemplateFunction!
     name: str
-    retval: Sequence[str | TemplateParamsInstance | InjectedValue] | None
+    retval: Sequence[str | TemplateClassInstance | InjectedValue] | None
     exc: Exception | None
 
-    def filter_injectables(self) -> Iterable[TemplateParamsInstance]:
+    def filter_injectables(self) -> Iterable[TemplateClassInstance]:
         if self.retval is not None:
             for item in self.retval:
                 if is_template_instance_xable(item):
@@ -96,7 +96,7 @@ class RenderEnvRequest:
 # could carve this up into separate functions. Can this be done without import
 # hooks?
 def render_driver(  # noqa: C901, PLR0912, PLR0915
-        template_instance: TemplateParamsInstance,
+        template_instance: TemplateClassInstance,
         render_ctx: RenderContext,
         ) -> list[str]:
     """This is a shared method for driving rendering, used by both async
@@ -389,14 +389,14 @@ class _InjectedInstanceContainer:
     loop) we can check for the container, and have special logic for
     handling them there.
     """
-    instance: TemplateParamsInstance
+    instance: TemplateClassInstance
 
 
 @dataclass(slots=True)
 class _RenderStackFrame:
     """
     """
-    instance: TemplateParamsInstance
+    instance: TemplateClassInstance
     render_config: RenderConfig
     signature: TemplateSignature
     provenance: Provenance
@@ -415,7 +415,7 @@ class _RenderStackFrame:
     slot_is_dynamic: bool = field(default=False, init=False)
     slot_instance_count: int = field(default=0, init=False)
     slot_instance_index: int = field(default=0, init=False)
-    slot_instances: Sequence[TemplateParamsInstance] = field(init=False)
+    slot_instances: Sequence[TemplateClassInstance] = field(init=False)
 
     @property
     def exhausted(self) -> bool:
@@ -424,7 +424,7 @@ class _RenderStackFrame:
         return self.part_index >= self.part_count
 
 
-type TemplateInjection = tuple[Provenance | None, TemplateParamsInstance]
+type TemplateInjection = tuple[Provenance | None, TemplateClassInstance]
 
 
 @dataclass(slots=True)
@@ -441,7 +441,7 @@ class RenderContext:
 
     def prep_render(
             self,
-            root_template_instance: TemplateParamsInstance,
+            root_template_instance: TemplateClassInstance,
             ) -> Iterable[RenderEnvRequest]:
         """For the passed root template, populates the template_preload
         and function_precall until either all resources have been
@@ -588,7 +588,7 @@ def _render_complex_content(
 
 
 def _build_render_frame_for_func_result(  # noqa: C901
-        enclosing_instance: TemplateParamsInstance,
+        enclosing_instance: TemplateClassInstance,
         enclosing_provenance: Provenance,
         abstract_call: InterpolatedFunctionCall,
         execution_result: FuncExecutionResult,
@@ -598,7 +598,7 @@ def _build_render_frame_for_func_result(  # noqa: C901
     """This constructs a _RenderNode for the given execution result and
     returns it (or None, if there was an error).
     """
-    injected_templates: list[tuple[int, TemplateParamsInstance]] = []
+    injected_templates: list[tuple[int, TemplateClassInstance]] = []
     resulting_parts: list[str | _InjectedInstanceContainer] = []
     if execution_result.exc is None:
         if execution_result.retval is None:
