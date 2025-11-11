@@ -14,8 +14,8 @@ from typing import overload
 from templatey._error_collector import ErrorCollector
 from templatey._error_collector import capture_traceback
 from templatey._types import TemplateClass
-from templatey._types import TemplateInstanceID
-from templatey._types import TemplateParamsInstance
+from templatey._types import TemplateClassInstance
+from templatey._types import TemplateClassInstanceID
 from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import ParsedTemplateResource
 from templatey.parser import TemplateInstanceContentRef
@@ -50,8 +50,8 @@ class ProvenanceNode:
     encloser_slot_index: int
     # The reason to have both the instance and the instance ID is so that we
     # can have hashability of the ID while not imposing an API on the instances
-    instance_id: TemplateInstanceID
-    instance: TemplateParamsInstance = field(compare=False, repr=False)
+    instance_id: TemplateClassInstanceID
+    instance: TemplateClassInstance = field(compare=False, repr=False)
 
 
 @dataclass(slots=True, frozen=True)

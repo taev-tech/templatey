@@ -24,8 +24,8 @@ from templatey._renderer import FuncExecutionRequest
 from templatey._renderer import TemplateInjection
 from templatey._renderer import get_precall_cache_key
 from templatey._types import TemplateClass
+from templatey._types import TemplateClassInstance
 from templatey._types import TemplateIntersectable
-from templatey._types import TemplateParamsInstance
 from templatey._types import create_templatey_id
 from templatey.exceptions import OvercomplicatedSlotTree
 from templatey.parser import InterpolatedFunctionCall
@@ -157,7 +157,7 @@ class PrerenderTreeNode(list[PrerenderTreeRoute]):
 
     def extract(
             self,
-            from_instance: TemplateParamsInstance,
+            from_instance: TemplateClassInstance,
             from_injection: Provenance | None,
             into_injection_backlog: list[TemplateInjection],
             into_precall_backlog: list[FuncExecutionRequest],
@@ -526,12 +526,12 @@ PrerenderTreeNode._children = _ProxyDescriptor()  # type: ignore
 class _ExtractionFrame:
     """
     """
-    active_instance: TemplateParamsInstance
+    active_instance: TemplateClassInstance
     active_subtree: PrerenderTreeNode
     target_subtree_index: int
     target_instance_index: int
     target_instances_count: int = field(kw_only=True, default=0)
-    target_instances: Sequence[TemplateParamsInstance] = field(
+    target_instances: Sequence[TemplateClassInstance] = field(
         kw_only=True, init=False)
     wip_provenance: Provenance
 

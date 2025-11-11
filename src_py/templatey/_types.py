@@ -51,15 +51,19 @@ DYNAMIC_TEMPLATE_CLASS: DynamicTemplateClass = \
 # _TemplateIntersectable from templates and the DataclassInstance returned by
 # the dataclass transform. Unfortunately, type intersections don't yet exist in
 # python, so we have to resort to this (overly broad) type
-TemplateParamsInstance = DataclassInstance
-type TemplateClass = type[TemplateParamsInstance]
-type TemplateInstanceID = int
+# TemplateParamsInstance is kept here temporarily for backwards compat.
+# It should be removed as soon as cleancopywriter and co stop using it (which
+# they shouldn't be, the whole module is private, but... well, sometimes things
+# aren't quite ideal)
+TemplateClassInstance = TemplateParamsInstance = DataclassInstance
+type TemplateClass = type[TemplateClassInstance]
+type TemplateClassInstanceID = int
 
 
 # Technically, these should use the TemplateIntersectable from templates.py
-# instead of ``TemplateParamsInstance``, python doesn't support type
+# instead of ``TemplateClassInstance``, python doesn't support type
 # intersections yet, so we settle for this.
-type Slot[T: TemplateParamsInstance] = Annotated[
+type Slot[T: TemplateClassInstance] = Annotated[
     Sequence[T],
     InterfaceAnnotation(InterfaceAnnotationFlavor.SLOT),
     ClcNote(
@@ -130,7 +134,7 @@ type Content[T] = Annotated[
         Both ``Var`` escaping and ``Content`` verification are
         controlled by the ``TemplateConfig``.
         ''')]
-type DynamicClassSlot[T: TemplateParamsInstance] = Annotated[
+type DynamicClassSlot[T: TemplateClassInstance] = Annotated[
     Sequence[T],
     InterfaceAnnotation(InterfaceAnnotationFlavor.SLOT),
     InterfaceAnnotation(InterfaceAnnotationFlavor.DYNAMIC),
@@ -194,7 +198,7 @@ def is_template_class(cls: type) -> TypeGuard[TemplateClass]:
     return isinstance(cls, type) and hasattr(cls, '_templatey_signature')
 
 
-def is_template_instance(obj: object) -> TypeGuard[TemplateParamsInstance]:
+def is_template_instance(obj: object) -> TypeGuard[TemplateClassInstance]:
     """Like is_template_instance_xable, but for the raw template class.
     """
     return (not isinstance(obj, type)) and hasattr(obj, '_templatey_signature')
@@ -202,7 +206,7 @@ def is_template_instance(obj: object) -> TypeGuard[TemplateParamsInstance]:
 
 class TemplateIntersectable(Protocol):
     """This is the actual template protocol, which we would
-    like to intersect with the TemplateParamsInstance, but cannot
+    like to intersect with the TemplateClassInstance, but cannot
     (because python currently lacks an intersection type).
 
     Partly here for documentation, partly for use in ``cast`` calls.

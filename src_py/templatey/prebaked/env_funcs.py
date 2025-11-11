@@ -2,7 +2,7 @@ from typing import Annotated
 
 from docnote import ClcNote
 
-from templatey._types import TemplateParamsInstance
+from templatey._types import TemplateClassInstance
 
 
 def xml_attrify(
@@ -54,7 +54,7 @@ def xml_attrify(
         return retval
 
 
-def inject_templates[T: TemplateParamsInstance](
+def inject_templates[T: TemplateClassInstance](
         *templates: T
         ) -> tuple[T, ...]:
     """This is a very simple function to wrap a passed template instance

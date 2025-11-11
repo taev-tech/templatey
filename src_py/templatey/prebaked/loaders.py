@@ -13,7 +13,7 @@ except ImportError:
 
 from docnote import ClcNote
 
-from templatey._types import TemplateParamsInstance
+from templatey._types import TemplateClassInstance
 from templatey.environments import AsyncTemplateLoader
 from templatey.environments import SyncTemplateLoader
 
@@ -27,14 +27,14 @@ class InlineStringTemplateLoader(
 
     def load_sync(
             self,
-            template: type[TemplateParamsInstance],
+            template: type[TemplateClassInstance],
             template_resource_locator: str
             ) -> str:
         return template_resource_locator
 
     async def load_async(
             self,
-            template: type[TemplateParamsInstance],
+            template: type[TemplateClassInstance],
             template_resource_locator: str
             ) -> str:
         await anyio.sleep(0)
@@ -61,14 +61,14 @@ class DictTemplateLoader[L: object](
 
     def load_sync(
             self,
-            template: type[TemplateParamsInstance],
+            template: type[TemplateClassInstance],
             template_resource_locator: L
             ) -> str:
         return self.lookup[template_resource_locator]
 
     async def load_async(
             self,
-            template: type[TemplateParamsInstance],
+            template: type[TemplateClassInstance],
             template_resource_locator: L
             ) -> str:
         await anyio.sleep(0)
@@ -99,7 +99,7 @@ class CompanionFileLoader(AsyncTemplateLoader[str], SyncTemplateLoader[str]):
 
     def load_sync(
             self,
-            template: type[TemplateParamsInstance],
+            template: type[TemplateClassInstance],
             template_resource_locator: str
             ) -> str:
         template_module_name = template.__module__
@@ -117,7 +117,7 @@ class CompanionFileLoader(AsyncTemplateLoader[str], SyncTemplateLoader[str]):
 
     async def load_async(
             self,
-            template: type[TemplateParamsInstance],
+            template: type[TemplateClassInstance],
             template_resource_locator: str
             ) -> str:
         template_module_name = template.__module__

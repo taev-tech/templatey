@@ -36,8 +36,8 @@ from templatey._signature import TemplateSignature
 from templatey._slot_tree import SlotTreeComplexityLimiter
 from templatey._slot_tree import set_complexity_limiter
 from templatey._types import TemplateClass
+from templatey._types import TemplateClassInstance
 from templatey._types import TemplateIntersectable
-from templatey._types import TemplateParamsInstance
 from templatey._types import is_template_instance
 from templatey.exceptions import MismatchedRenderColor
 from templatey.exceptions import MismatchedTemplateEnvironment
@@ -50,9 +50,9 @@ from templatey.templates import InjectedValue
 # Note: strings here will be escaped. InjectedValues may decide whether or not
 # escaping should be applied. Nested templates will not be escaped.
 EnvFunction = Callable[
-    ..., Sequence[str | TemplateParamsInstance | InjectedValue]]
+    ..., Sequence[str | TemplateClassInstance | InjectedValue]]
 EnvFunctionAsync = Callable[
-    ..., Awaitable[Sequence[str | TemplateParamsInstance | InjectedValue]]]
+    ..., Awaitable[Sequence[str | TemplateClassInstance | InjectedValue]]]
 
 DEFAULT_SLOT_TREE_COMPLEXITY_LIMITER = SlotTreeComplexityLimiter(
     stack_depth_limit=100,
@@ -74,7 +74,7 @@ class SyncTemplateLoader[L: object](Protocol):
 
     def load_sync(
             self,
-            template: type[TemplateParamsInstance],
+            template: type[TemplateClassInstance],
             template_resource_locator: L
             ) -> str:
         """This is responsible for loading the actual template text,
@@ -88,7 +88,7 @@ class AsyncTemplateLoader[L: object](Protocol):
 
     async def load_async(
             self,
-            template: type[TemplateParamsInstance],
+            template: type[TemplateClassInstance],
             template_resource_locator: L
             ) -> str:
         """This is responsible for loading the actual template text,
@@ -99,7 +99,7 @@ class AsyncTemplateLoader[L: object](Protocol):
 
 class RenderEnvironment:
     _parsed_template_cache: dict[
-        type[TemplateParamsInstance], ParsedTemplateResource]
+        type[TemplateClassInstance], ParsedTemplateResource]
     _env_functions: dict[str, _TemplateFunctionContainer]
     # We use this to prevent registering template functions after any calls
     # to load() have been made, because it would result in different template
@@ -186,7 +186,7 @@ class RenderEnvironment:
 
     async def load_async(
             self,
-            template: type[TemplateParamsInstance],
+            template: type[TemplateClassInstance],
             *,
             override_validation_strictness: None | bool = None,
             force_reload: bool = False,
@@ -201,7 +201,7 @@ class RenderEnvironment:
                         call to load returns.''')
                 ] = None
             ) -> ParsedTemplateResource:
-        """Loads a template resource from a TemplateParamsInstance
+        """Loads a template resource from a TemplateClassInstance
         class. Caches it within the environment and returns the
         resulting ParsedTemplateResource.
 
@@ -276,7 +276,7 @@ class RenderEnvironment:
 
     def load_sync(
             self,
-            template: type[TemplateParamsInstance],
+            template: type[TemplateClassInstance],
             *,
             override_validation_strictness: None | bool = None,
             force_reload: bool = False,
@@ -291,7 +291,7 @@ class RenderEnvironment:
                         call to load returns.''')
                 ] = None
             ) -> ParsedTemplateResource:
-        """Loads a template resource from a TemplateParamsInstance
+        """Loads a template resource from a TemplateClassInstance
         class. Caches it within the environment and returns the
         resulting ParsedTemplateResource.
 
@@ -499,7 +499,7 @@ class RenderEnvironment:
 
     def render_sync(
             self,
-            template_instance: TemplateParamsInstance
+            template_instance: TemplateClassInstance
             ) -> str:
         error_collector = ErrorCollector()
         template_preload: dict[TemplateClass, ParsedTemplateResource] = {}
@@ -557,7 +557,7 @@ class RenderEnvironment:
 
     async def render_async(
             self,
-            template_instance: TemplateParamsInstance
+            template_instance: TemplateClassInstance
             ) -> str:
         error_collector = ErrorCollector()
         template_preload: dict[TemplateClass, ParsedTemplateResource] = {}
