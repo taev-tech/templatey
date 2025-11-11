@@ -66,10 +66,28 @@ class Provenance:
     _hash: int | None = field(
         default=None, compare=False, init=False, repr=False)
 
-    def with_appended(self, node_to_append: ProvenanceNode) -> Provenance:
-        return Provenance(
-            (*self.slotpath, node_to_append),
-            from_injection=self.from_injection)
+    def with_appended(
+            self,
+            node_to_append: ProvenanceNode,
+            *,
+            dynamic: bool = False
+            ) -> Provenance:
+        # This is a little awkward. I think ideally we'd refactor things so
+        # that the provenance module is always responsible for constructing
+        # provenance instances, and then we wouldn't be discarding the passed
+        # node. But that cleanup can be saved for another time.
+        if dynamic:
+            return Provenance(
+                slotpath=(ProvenanceNode(
+                    encloser_slot_key='',
+                    encloser_slot_index=-1,
+                    instance_id=node_to_append.instance_id,
+                    instance=node_to_append.instance),),
+                from_injection=self)
+        else:
+            return Provenance(
+                (*self.slotpath, node_to_append),
+                from_injection=self.from_injection)
 
     def bind_call_signature(
             self,

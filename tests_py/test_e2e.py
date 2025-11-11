@@ -675,7 +675,7 @@ class TestApiE2E:
 
         injector = '{@inject_templates(content.to_inject)}'
         spantext = '<span>{slot.span}</span>'
-        spantext_em = '<em class="{@add_class()}>{var.text}</em>'
+        spantext_em = '<em class="{@add_class()}">{var.text}</em>'
         spantext_strong = '<strong>{var.text}</strong>'
 
         # Note: keep this as a forward ref until we have more test coverage in

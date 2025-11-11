@@ -209,16 +209,7 @@ class PrerenderTreeNode(list[PrerenderTreeRoute]):
 
                 for dynamic_slot_name in frame_subtree.dynamic_slot_names:
                     into_injection_backlog.extend(
-                        (
-                            Provenance((
-                                ProvenanceNode(
-                                    encloser_slot_key='',
-                                    encloser_slot_index=-1,
-                                    instance_id=id(dynamic_instance),
-                                    instance=dynamic_instance),),
-                                from_injection=frame_provenance),
-                            dynamic_instance)
-
+                        (frame_provenance, dynamic_instance)
                         for dynamic_instance
                         in getattr(frame_instance, dynamic_slot_name))
 

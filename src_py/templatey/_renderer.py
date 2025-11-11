@@ -226,6 +226,11 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     slot_instances = getattr(
                         render_frame.instance, next_part.name)
                     slot_instance_count = len(slot_instances)
+                    slot_is_dynamic = (
+                        next_part.name in render_frame
+                            .signature
+                            .fieldset
+                            .dynamic_class_slot_names)
                 # Note: this would happen if the getattr fails, for example
                 # because the wrong type was passed for the slot instance.
                 except Exception as exc:
@@ -234,6 +239,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     continue
 
                 if slot_instance_count > 0:
+                    render_frame.slot_is_dynamic = slot_is_dynamic
                     render_frame.slot_instance_count = slot_instance_count
                     render_frame.slot_instances = slot_instances
                 # Note that this is also important to skip prefix/suffix.
@@ -262,6 +268,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     continue
 
                 slot_instances = render_frame.slot_instances
+                slot_is_dynamic = render_frame.slot_is_dynamic
 
             # Remember: we skip this entirely if the slot instance count
             # is zero.
@@ -286,7 +293,8 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                             encloser_slot_key=next_part.name,
                             encloser_slot_index=slot_instance_index,
                             instance_id=id(slot_instance),
-                            instance=slot_instance)),
+                            instance=slot_instance),
+                        dynamic=slot_is_dynamic),
                     transformers=
                         slot_instance_signature.fieldset.transformers))
 
@@ -338,6 +346,13 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     signature=injected_instance_signature,
                     # Note that the correct ``from_injection`` value is
                     # added when creating the current stack frame.
+                    # Also note: this looks like it might be a bug, since
+                    # it seems like we're appending an injected root node where
+                    # we really should be treating it as the ``from_injection``
+                    # instead. However, I think this is actually resolved as
+                    # part of how we use/abuse the render stack to handle
+                    # injections, since we have an e2e test checking for
+                    # injections, which passes.
                     provenance=render_frame.provenance.with_appended(
                         ProvenanceNode(
                             encloser_slot_key='',
@@ -397,6 +412,7 @@ class _RenderStackFrame:
     _: KW_ONLY
     part_count: int
     part_index: int = field(default=0, init=False)
+    slot_is_dynamic: bool = field(default=False, init=False)
     slot_instance_count: int = field(default=0, init=False)
     slot_instance_index: int = field(default=0, init=False)
     slot_instances: Sequence[TemplateParamsInstance] = field(init=False)
