@@ -387,8 +387,7 @@ class RenderEnvironment:
             ) -> ParsedTemplateResource:
         parsed_template_resource = parse(
             template_text,
-            signature.parse_config.interpolator,
-            signature.parse_config.segment_modifiers)
+            signature.parse_config)
 
         if override_validation_strictness is None:
             strict_mode = self.strict_interpolation_validation

@@ -5,6 +5,7 @@ import itertools
 import logging
 import re
 import string
+import typing
 from collections import defaultdict
 from collections.abc import Collection
 from collections.abc import Generator
@@ -30,6 +31,9 @@ from templatey.interpolators import transform_unicode_control
 from templatey.interpolators import untransform_unicode_control
 from templatey.modifiers import EnvFuncInvocationRef
 from templatey.modifiers import SegmentModifier
+
+if typing.TYPE_CHECKING:
+    from templatey.templates import TemplateParseConfig
 
 _SLOT_MATCHER = re.compile(r'^\s*slot\.([A-z_][A-z0-9_]*)\s*$')
 _CONTENT_MATCHER = re.compile(r'^\s*content\.([A-z_][A-z0-9_]*)\s*$')
@@ -66,7 +70,7 @@ class ParsedTemplateResource:
     # tested against the signature of the actual render function during loading
     function_calls: dict[str, tuple[InterpolatedFunctionCall, ...]] = field(
         compare=False)
-    slots: dict[str, InterpolatedSlot] = field(compare=False)
+    slots: dict[tuple[str, int], InterpolatedSlot] = field(compare=False)
 
     # Purely here for performance reasons
     part_count: int = field(init=False, compare=False)
@@ -77,7 +81,9 @@ class ParsedTemplateResource:
     @classmethod
     def from_parts(
             cls,
-            parts: Sequence[TemplateSegment]
+            parts: Sequence[TemplateSegment],
+            *,
+            parse_config: TemplateParseConfig
             ) -> ParsedTemplateResource:
         if not isinstance(parts, tuple):
             parts = tuple(parts)
@@ -93,9 +99,17 @@ class ParsedTemplateResource:
             elif isinstance(part, InterpolatedVariable):
                 variable_names.add(part.name)
             elif isinstance(part, InterpolatedSlot):
-                # Interpolated slots must be unique; enforce that here.
-                if part.name in slot_names:
-                    raise DuplicateSlotName(part.name)
+                # Interpolated slots must be unique unless explicitly
+                # configured to allow that; enforce that here.
+                if (
+                    part.name in slot_names
+                    and not parse_config.allow_slot_repetition
+                ):
+                    raise DuplicateSlotName(
+                        'Repeated slot name within template. This is usually '
+                        + 'an error, but if desired, you can set '
+                        + '``allow_slot_repetition=True`` in the parse '
+                        + 'config.', part.name)
 
                 for maybe_reference in part.params.values():
                     nested_content_refs, nested_var_refs, _ = \
@@ -135,7 +149,7 @@ class ParsedTemplateResource:
                 name: tuple(calls) for name, calls in functions.items()},
             data_names=frozenset(data_names),
             slots={
-                maybe_slot.name: maybe_slot
+                (maybe_slot.name, maybe_slot.part_index): maybe_slot
                 for maybe_slot in parts
                 if isinstance(maybe_slot, InterpolatedSlot)})
 
@@ -268,13 +282,12 @@ _VALID_NESTED_REFS = {
 
 def parse(
         template_str: str,
-        interpolator: NamedInterpolator,
-        segment_modifiers: Sequence[SegmentModifier],
+        parse_config: TemplateParseConfig,
         ) -> ParsedTemplateResource:
     """Parses the template string with the passed interpolator and
     applies the desired segment modifiers.
     """
-    if interpolator is NamedInterpolator.UNICODE_CONTROL:
+    if parse_config.interpolator is NamedInterpolator.UNICODE_CONTROL:
         do_untransform = True
         template_str = transform_unicode_control(template_str)
     else:
@@ -287,9 +300,11 @@ def parse(
     ):
         parts.extend(_apply_segment_modifiers(
             premodification_segment,
-            segment_modifiers,
+            parse_config.segment_modifiers,
             part_index_counter))
-    return ParsedTemplateResource.from_parts(parts)
+    return ParsedTemplateResource.from_parts(
+        parts,
+        parse_config=parse_config)
 
 
 def _apply_segment_modifiers(

@@ -3,6 +3,9 @@ from __future__ import annotations
 import re
 from unittest.mock import patch
 
+import pytest
+
+from templatey.exceptions import DuplicateSlotName
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolatedContent
 from templatey.parser import InterpolatedFunctionCall
@@ -15,6 +18,7 @@ from templatey.parser import TemplateInstanceDataRef
 from templatey.parser import TemplateInstanceVariableRef
 from templatey.parser import parse
 from templatey.templates import SegmentModifier
+from templatey.templates import TemplateParseConfig
 
 
 # TODO: should also add more specific tests for the individual private
@@ -23,7 +27,9 @@ class TestParse:
 
     def test_unicodecc_with_variable_and_format_spec(self):
         template = 'foo {␎var.bar:__fmt__="04d"␏}'
-        parsed = parse(template, NamedInterpolator.UNICODE_CONTROL, ())
+        parse_config = TemplateParseConfig(
+            interpolator=NamedInterpolator.UNICODE_CONTROL)
+        parsed = parse(template, parse_config)
 
         assert len(parsed.parts) == 3
         assert parsed.parts[0] == 'foo {'
@@ -40,7 +46,7 @@ class TestParse:
 
     def test_curlybrace_plain_string(self):
         template = 'foo'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 1
         assert parsed.parts[0] == template
@@ -52,7 +58,7 @@ class TestParse:
 
     def test_curlybrace_with_content(self):
         template = 'foo {content.bar}'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
@@ -68,7 +74,7 @@ class TestParse:
 
     def test_curlybrace_with_variable(self):
         template = 'foo {var.bar}'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
@@ -84,7 +90,7 @@ class TestParse:
 
     def test_curlybrace_with_variable_after_whitespace(self):
         template = 'foo {\n    var.bar}'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
@@ -100,7 +106,7 @@ class TestParse:
 
     def test_curlybrace_with_content_and_affix(self):
         template = r'foo {content.bar: __prefix__="\n", __suffix__=";"}'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
@@ -119,7 +125,7 @@ class TestParse:
 
     def test_curlybrace_with_slot_simple(self):
         template = 'foo {slot.bar}'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
@@ -136,7 +142,7 @@ class TestParse:
 
     def test_curlybrace_with_slot_params_constant(self):
         template = 'foo {slot.bar: baz="zab"}'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
@@ -153,7 +159,7 @@ class TestParse:
 
     def test_curlybrace_with_slot_params_content_ref(self):
         template = 'foo {slot.bar: baz=content.baz}'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
@@ -169,7 +175,7 @@ class TestParse:
 
     def test_curlybrace_with_function_simple_2x(self):
         template = 'foo {@bar()} {@bar()}'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 4
         assert parsed.parts[0] == 'foo '
@@ -210,7 +216,7 @@ class TestParse:
 
     def test_curlybrace_with_function_params_constant(self):
         template = 'foo {@bar(1, baz="zab")}'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
@@ -229,7 +235,7 @@ class TestParse:
 
     def test_curlybrace_with_function_params_var_ref(self):
         template = 'foo {@bar(var.baz)}'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
@@ -248,7 +254,7 @@ class TestParse:
 
     def test_curlybrace_with_function_params_data_ref(self):
         template = 'foo {@bar(data.baz)}'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
@@ -268,7 +274,7 @@ class TestParse:
 
     def test_curlybrace_with_function_params_var_ref_arg_expansion(self):
         template = 'foo {@bar(*var.baz)}'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
@@ -287,7 +293,7 @@ class TestParse:
 
     def test_curlybrace_with_function_params_var_ref_kwarg_expansion(self):
         template = 'foo {@bar(**var.baz)}'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
@@ -306,7 +312,7 @@ class TestParse:
 
     def test_curlybrace_with_comment(self):
         template = 'foo {# some comment} bar'
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, ())
+        parsed = parse(template, TemplateParseConfig())
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
@@ -326,7 +332,7 @@ class TestParse:
         """
         # Breakers here are to forcibly separate segments
         template = 'foo {# breaker}bar {# breaker}baz'
-        seg_mods = [
+        seg_mods = (
             SegmentModifier(
                 pattern=re.compile('f(o)(o)'),
                 modifier=
@@ -335,9 +341,10 @@ class TestParse:
                         for capture in modifier_match.captures]),
             SegmentModifier(
                 pattern=re.compile('foo|bar'),
-                modifier=lambda modifier_match: ['oof', 'rab'])]
+                modifier=lambda modifier_match: ['oof', 'rab']))
 
-        parsed = parse(template, NamedInterpolator.CURLY_BRACES, seg_mods)
+        parse_config = TemplateParseConfig(segment_modifiers=seg_mods)
+        parsed = parse(template, parse_config)
 
         assert parsed.parts == (
             LiteralTemplateString('moo', part_index=0),
@@ -347,3 +354,38 @@ class TestParse:
             LiteralTemplateString('rab', part_index=4),
             LiteralTemplateString(' ', part_index=5),
             LiteralTemplateString('baz', part_index=6),)
+
+    def test_disallowed_repetition_fails(self):
+        """Repeating a slot without explicitly enabling repetition in
+        the parse config must raise.
+        """
+        template = 'foo {slot.bar}{slot.bar}'
+        with pytest.raises(DuplicateSlotName):
+            parse(template, TemplateParseConfig())
+
+    def test_allowed_repetition_succeeds(self):
+        """Repeating a slot after explicitly enabling repetition in
+        the parse config must succeed.
+        """
+        template = 'foo {slot.bar}{slot.bar}'
+        parsed = parse(template, TemplateParseConfig(
+            allow_slot_repetition=True))
+
+        assert len(parsed.parts) == 4
+        assert parsed.parts[0] == 'foo '
+        assert parsed.parts[1] == InterpolatedSlot(
+            part_index=1,
+            name='bar',
+            params={},
+            config=InterpolationConfig())
+        assert parsed.parts[2] == ''
+        assert parsed.parts[3] == InterpolatedSlot(
+            part_index=3,
+            name='bar',
+            params={},
+            config=InterpolationConfig())
+        assert not parsed.variable_names
+        assert not parsed.content_names
+        assert parsed.slot_names == frozenset({'bar'})
+        assert not parsed.function_names
+        assert not parsed.function_calls

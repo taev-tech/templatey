@@ -121,6 +121,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                 ProvenanceNode(
                     encloser_slot_key='',
                     encloser_slot_index=-1,
+                    encloser_part_index=-1,
                     instance_id=id(template_instance),
                     instance=template_instance),)),
             instance=template_instance,
@@ -292,6 +293,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                         ProvenanceNode(
                             encloser_slot_key=next_part.name,
                             encloser_slot_index=slot_instance_index,
+                            encloser_part_index=next_part.part_index,
                             instance_id=id(slot_instance),
                             instance=slot_instance),
                         dynamic=slot_is_dynamic),
@@ -357,6 +359,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                         ProvenanceNode(
                             encloser_slot_key='',
                             encloser_slot_index=-1,
+                            encloser_part_index=-1,
                             instance_id=id(injected_instance),
                             instance=injected_instance),),
                     transformers=

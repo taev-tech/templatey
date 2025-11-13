@@ -120,6 +120,7 @@ class TestRecursivelyCoerceFuncExecutionParams:
         provenance = Provenance(slotpath=(ProvenanceNode(
             encloser_slot_key='',
             encloser_slot_index=-1,
+            encloser_part_index=-1,
             instance_id=123,
             instance=fake_instance),))
 

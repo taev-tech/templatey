@@ -178,6 +178,7 @@ class PrerenderTreeNode(list[PrerenderTreeRoute]):
                         ProvenanceNode(
                             encloser_slot_key='',
                             encloser_slot_index=-1,
+                            encloser_part_index=-1,
                             instance_id=id(from_instance),
                             instance=from_instance),),
                     from_injection=from_injection))]
@@ -278,6 +279,10 @@ class PrerenderTreeNode(list[PrerenderTreeRoute]):
                             ProvenanceNode(
                                 encloser_slot_key=slot_name,
                                 encloser_slot_index=target_instance_index,
+                                # This is a workaround, since we can't know
+                                # this in advance. We use -2 to make it clear
+                                # where it's coming from.
+                                encloser_part_index=-2,
                                 instance_id=id(instance_to_check),
                                 instance=instance_to_check)),
                         from_injection=from_injection)))
