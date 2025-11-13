@@ -48,6 +48,13 @@ class ProvenanceNode:
     """
     encloser_slot_key: str
     encloser_slot_index: int
+    # Note: this is a little awkward. On the one hand, we need to store this
+    # during rendering so that we can recover the part index to do the correct
+    # param lookup during param binding. On the other hand, this can't be known
+    # ahead of time, so the slot tree cannot know it.
+    # Our compromise is to make it non-comparable, and set it to -1 in the
+    # slot tree.
+    encloser_part_index: int = field(compare=False)
     # The reason to have both the instance and the instance ID is so that we
     # can have hashability of the ID while not imposing an API on the instances
     instance_id: TemplateClassInstanceID
@@ -81,6 +88,7 @@ class Provenance:
                 slotpath=(ProvenanceNode(
                     encloser_slot_key='',
                     encloser_slot_index=-1,
+                    encloser_part_index=-1,
                     instance_id=node_to_append.instance_id,
                     instance=node_to_append.instance),),
                 from_injection=self)
@@ -181,6 +189,7 @@ class Provenance:
         # we need to do some remapping as we walk things back.
         param_name = name
         slot_key = current_provenance_node.encloser_slot_key
+        part_index = current_provenance_node.encloser_part_index
         for encloser in reversed(slotpath[0:-1]):
             enclosing_template_cls = type(encloser.instance)
             # We do this so that env funcs that inject templates don't try
@@ -191,7 +200,7 @@ class Provenance:
 
             params_from_encloser = (
                 template_preload[enclosing_template_cls]
-                .slots[slot_key]
+                .slots[(slot_key, part_index)]
                 .params)
             value_from_encloser = params_from_encloser.get(param_name, ...)
 
@@ -200,6 +209,7 @@ class Provenance:
             if isinstance(value_from_encloser, _passthrough_reftype):
                 # First, prep the next iteration, in case we need one.
                 slot_key = encloser.encloser_slot_key
+                part_index = encloser.encloser_part_index
                 param_name = value_from_encloser.name
                 # Now, update the value from the enclosure, in case we don't
                 # need a next iteration. Note that we use the NEW param name

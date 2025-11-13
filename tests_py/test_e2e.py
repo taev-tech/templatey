@@ -15,6 +15,7 @@ from templatey import Content
 from templatey import DynamicClassSlot
 from templatey import Slot
 from templatey import TemplateFieldConfig
+from templatey import TemplateParseConfig
 from templatey import TemplateResourceConfig
 from templatey import Var
 from templatey import template
@@ -891,6 +892,41 @@ class TestApiE2E:
             EnclosingTemplate(
                 foo1=[NestedTemplate(value=...)],
                 foo2=[NestedTemplate(value=...)]))
+
+        assert render_result == 'foo1 foo2'
+
+    def test_repeated_slot(self):
+        """A template with slot repetition must render successfully.
+        Additionally, different slot configs between repetition
+        instances must be respected during rendering.
+        """
+        nested_text = '''foo{var.value}'''
+        # Note the different values here!
+        enclosing = '''{slot.nested: value="1"} {slot.nested: value="2"}'''
+
+        @ext_dataclass(
+            html,
+            TemplateResourceConfig('enclosing'),
+            TemplateParseConfig(allow_slot_repetition=True))
+        class EnclosingTemplate:
+            nested: Slot[NestedTemplate]
+
+        @ext_dataclass(
+            html,
+            TemplateResourceConfig('nested'))
+        class NestedTemplate:
+            value: Var[str]
+
+        render_env = RenderEnvironment(
+            env_functions=(),
+            template_loader=DictTemplateLoader(
+                templates={
+                    'nested': nested_text,
+                    'enclosing': enclosing}))
+
+        render_result = render_env.render_sync(
+            EnclosingTemplate(
+                nested=[NestedTemplate(value=...)]))
 
         assert render_result == 'foo1 foo2'
 

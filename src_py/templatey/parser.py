@@ -70,7 +70,7 @@ class ParsedTemplateResource:
     # tested against the signature of the actual render function during loading
     function_calls: dict[str, tuple[InterpolatedFunctionCall, ...]] = field(
         compare=False)
-    slots: dict[str, InterpolatedSlot] = field(compare=False)
+    slots: dict[tuple[str, int], InterpolatedSlot] = field(compare=False)
 
     # Purely here for performance reasons
     part_count: int = field(init=False, compare=False)
@@ -149,7 +149,7 @@ class ParsedTemplateResource:
                 name: tuple(calls) for name, calls in functions.items()},
             data_names=frozenset(data_names),
             slots={
-                maybe_slot.name: maybe_slot
+                (maybe_slot.name, maybe_slot.part_index): maybe_slot
                 for maybe_slot in parts
                 if isinstance(maybe_slot, InterpolatedSlot)})
 

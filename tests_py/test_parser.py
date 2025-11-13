@@ -3,6 +3,9 @@ from __future__ import annotations
 import re
 from unittest.mock import patch
 
+import pytest
+
+from templatey.exceptions import DuplicateSlotName
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolatedContent
 from templatey.parser import InterpolatedFunctionCall
@@ -351,3 +354,38 @@ class TestParse:
             LiteralTemplateString('rab', part_index=4),
             LiteralTemplateString(' ', part_index=5),
             LiteralTemplateString('baz', part_index=6),)
+
+    def test_disallowed_repetition_fails(self):
+        """Repeating a slot without explicitly enabling repetition in
+        the parse config must raise.
+        """
+        template = 'foo {slot.bar}{slot.bar}'
+        with pytest.raises(DuplicateSlotName):
+            parse(template, TemplateParseConfig())
+
+    def test_allowed_repetition_succeeds(self):
+        """Repeating a slot after explicitly enabling repetition in
+        the parse config must succeed.
+        """
+        template = 'foo {slot.bar}{slot.bar}'
+        parsed = parse(template, TemplateParseConfig(
+            allow_slot_repetition=True))
+
+        assert len(parsed.parts) == 4
+        assert parsed.parts[0] == 'foo '
+        assert parsed.parts[1] == InterpolatedSlot(
+            part_index=1,
+            name='bar',
+            params={},
+            config=InterpolationConfig())
+        assert parsed.parts[2] == ''
+        assert parsed.parts[3] == InterpolatedSlot(
+            part_index=3,
+            name='bar',
+            params={},
+            config=InterpolationConfig())
+        assert not parsed.variable_names
+        assert not parsed.content_names
+        assert parsed.slot_names == frozenset({'bar'})
+        assert not parsed.function_names
+        assert not parsed.function_calls
