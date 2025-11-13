@@ -460,6 +460,11 @@ class RenderEnvironment:
         content_names = fieldset.content_names
         data_names = fieldset.data_names
 
+        # Note that we ONLY EVER want to error out if there's MISSING data;
+        # extra data is always okay. These are meant to be extensible and
+        # reusable as normal dataclasses!
+        data_mismatch = (parsed_template_resource.data_names - data_names)
+
         if strict_mode:
             variables_mismatch = (
                 parsed_template_resource.variable_names ^ variable_names)
@@ -468,8 +473,6 @@ class RenderEnvironment:
                 ^ (slot_names | dynamic_class_slot_names))
             content_mismatch = (
                 parsed_template_resource.content_names ^ content_names)
-            data_mismatch = (
-                parsed_template_resource.data_names ^ data_names)
 
         else:
             variables_mismatch = (
@@ -479,8 +482,6 @@ class RenderEnvironment:
                 - (slot_names | dynamic_class_slot_names))
             content_mismatch = (
                 parsed_template_resource.content_names - content_names)
-            data_mismatch = (
-                parsed_template_resource.data_names - data_names)
 
         if (
             variables_mismatch
