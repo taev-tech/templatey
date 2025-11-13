@@ -210,7 +210,8 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                         render_frame.render_config.content_verifier(
                             formatted_val)
                         to_join.extend(
-                            next_part.config.apply_affix(formatted_val))
+                            next_part.config.apply_content_affix(
+                                formatted_val))
 
                 except Exception as exc:
                     error_collector.append(exc)
@@ -221,6 +222,8 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
         elif isinstance(next_part, InterpolatedSlot):
             slot_instance_index = render_frame.slot_instance_index
             if slot_instance_index == 0:
+                is_first_instance = True
+
                 # Note that this needs a dedicated try/catch so that the
                 # part_index handling logic remains outside of the failure case
                 try:
@@ -250,15 +253,19 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     continue
 
             else:
+                is_first_instance = False
+                slot_instance_count = render_frame.slot_instance_count
+
                 # Note that we skip this entirely if the slot instance
                 # count is zero, so by definition, if we hit this branch,
                 # we need a suffix.
-                to_join.extend(next_part.config.apply_suffix_iter())
+                to_join.extend(next_part.config.apply_slot_postamble(
+                    is_last_instance=
+                        slot_instance_index == slot_instance_count))
 
-                slot_instance_count = render_frame.slot_instance_count
                 # We've exhausted the instances; reset the state for the
                 # next slot.
-                if render_frame.slot_instance_index >= slot_instance_count:
+                if slot_instance_index >= slot_instance_count:
                     render_frame.slot_instance_index = 0
                     render_frame.slot_instance_count = 0
                     # Note: we're deliberately skipping the slot instances,
@@ -273,7 +280,8 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
 
             # Remember: we skip this entirely if the slot instance count
             # is zero.
-            to_join.extend(next_part.config.apply_prefix_iter())
+            to_join.extend(next_part.config.apply_slot_preamble(
+                is_first_instance))
             slot_instance = slot_instances[slot_instance_index]
             # Note that this needs to support both union slot
             # types, and (eventually) dynamic slot types, hence
