@@ -600,6 +600,46 @@ class TestRenderEnvironment:
                     function_calls={}),
                 strict_mode=True)
 
+    def test_validate_signature_extra_data_in_strict_mode(self):
+        """_validate_template_signature must not raise if there are
+        DATA attributes defined on the template that are missing in the
+        template text.
+        """
+        @template(fake_template_config, 'fake')
+        class FakeTemplate:
+            foo: Var[str]
+            bar: int
+
+        template_signature = cast(
+            type[TemplateIntersectable], FakeTemplate)._templatey_signature
+        ensure_recursive_totality(template_signature, FakeTemplate)
+
+        loader = DictTemplateLoader(templates={'fake': 'foobar'})
+        loader_mock = Mock(spec=loader.load_async, wraps=loader.load_async)
+        loader.load_async = loader_mock
+
+        render_env = RenderEnvironment(template_loader=loader)
+        result = render_env._validate_template_signature(
+            FakeTemplate,
+            template_signature,
+            ParsedTemplateResource(
+                parts=(
+                    LiteralTemplateString('foobar', part_index=0),
+                    InterpolatedVariable(
+                        part_index=1,
+                        name='foo',
+                        config=InterpolationConfig()),),
+                variable_names=frozenset(),
+                content_names=frozenset(),
+                slot_names=frozenset(),
+                slots={},
+                data_names=frozenset(),
+                function_names=frozenset(),
+                function_calls={}),
+            strict_mode=True)
+
+        assert result
+
     def test_validate_signature_too_much_in_lax_mode(self):
         """_validate_template_signature must NOT raise
         MismatchedTemplateSignature when running in strict mode if there
