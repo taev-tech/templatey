@@ -27,7 +27,6 @@ from typing import dataclass_transform
 from typing import overload
 
 import dcei
-from dcei import DataclassInstance
 from dcei import DataclassKwargs
 from dcei import DceiClassConfigDict
 from dcei import DceiConfigMixin
