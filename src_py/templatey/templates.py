@@ -362,6 +362,15 @@ class TemplateParseConfig(DceiConfigMixin):
                 short-circuit the remaining modifiers, regardless of
                 whether or not it applies any changes.''')
         ] = ()
+    allow_slot_repetition: Annotated[
+            bool,
+            Note('''By default, a template can reference a particular slot
+                exactly once within its body, and attempting to repeat a slot
+                raises an error (since this is usually a mistake). However, in
+                some cases, slot repetition can be useful; in that case, you
+                should set this to ``True``.
+                ''')
+        ] = False
 
 
 ParseConfig: Annotated[
