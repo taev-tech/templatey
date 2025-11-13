@@ -565,10 +565,21 @@ class TestApiE2E:
                 __fmt__='~<5'
             }{content.configged:
                 __prefix__="__",
-                __suffix__=";\n",
+                __suffix__=":::",
                 __fmt__='.<5'}{
-            slot.nested_1: __suffix__=';\n'}{
-            slot.nested_2: __prefix__='!!!!'}''')
+            slot.nested_1:
+                __header__='[',
+                __footer__=']',
+                __suffix__=';',
+                __delimiter__='\n',}{
+            slot.nested_2:
+                __prefix__='!!!!',
+                __header__='[',
+                __footer__=']',
+                __delimiter__='?'}{
+            slot.nested_3:
+                __prefix__='->',
+                __footer__='<end>',}''')
 
         @template(html_legacy, 'test_template')
         class OuterTemplate:
@@ -576,6 +587,7 @@ class TestApiE2E:
             omitted: Content[str | None]
             nested_1: Slot[SlotTemplate]
             nested_2: Slot[SlotTemplate]
+            nested_3: Slot[SlotTemplate]
 
         render_env = RenderEnvironment(
             env_functions=(),
@@ -591,9 +603,12 @@ class TestApiE2E:
                 nested_1=(
                     SlotTemplate(value='bar'),
                     SlotTemplate(value='rab')),
-                nested_2=()))
+                nested_2=(),
+                nested_3=(
+                    SlotTemplate(value='baz'),
+                    SlotTemplate(value='zab'))))
 
-        assert render_result == '__foo..;\nbar;\nrab;\n'
+        assert render_result == '__foo..:::[bar;\nrab;]->baz->zab<end>'
 
     def test_renderer(self):
         """Specifying a renderer on a field must correctly alter the

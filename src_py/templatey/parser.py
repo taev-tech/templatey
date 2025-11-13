@@ -22,7 +22,7 @@ from typing import Annotated
 from typing import Any
 from typing import cast
 
-from docnote import ClcNote
+from docnote import Note
 
 from templatey.exceptions import DuplicateSlotName
 from templatey.exceptions import InvalidTemplateInterpolation
@@ -249,7 +249,7 @@ class TemplateInstanceContentRef:
     """
     name: Annotated[
         str,
-        ClcNote('The name of the content parameter')]
+        Note('The name of the content parameter')]
 
 
 @dataclass(slots=True, frozen=True)
@@ -260,7 +260,7 @@ class TemplateInstanceVariableRef:
     """
     name: Annotated[
         str,
-        ClcNote('The name of the variable parameter')]
+        Note('The name of the variable parameter')]
 
 
 @dataclass(slots=True, frozen=True)
@@ -271,7 +271,7 @@ class TemplateInstanceDataRef:
     """
     name: Annotated[
         str,
-        ClcNote('The name of the data attribute (the dataclass field name)')]
+        Note('The name of the data attribute (the dataclass field name)')]
 
 
 _VALID_NESTED_REFS = {
@@ -487,30 +487,98 @@ def _wrap_formatter_parse(
 class InterpolationConfig:
     """
     """
-    fmt: str | None = None
-    prefix: str | None = None
-    suffix: str | None = None
+    fmt: Annotated[
+            str | None,
+            Note('The format spec to apply.')
+        ] = None
+    prefix: Annotated[
+            str | None,
+            Note('''A prefix to apply if, and only if, the content or slot
+                is non-None.''')
+        ] = None
+    suffix: Annotated[
+            str | None,
+            Note('''A suffix to apply if, and only if, the content or slot
+                is non-None.''')
+        ] = None
+    delimiter: Annotated[
+            str | None,
+            Note('''A value to insert between instances of the same slot.
+                Note that the instances themselves need not be the same type;
+                they just need to be members of the same slot.
 
-    def apply_prefix_iter(self) -> Iterator[str]:
-        """If a prefix is defined, yields it. Otherwise, does nothing.
+                Not relevant for interpolated content.''')
+        ] = None
+    header: Annotated[
+            str | None,
+            Note('''A value to insert if before every slot instance if, and
+                only if, the slot was non-empty.
+
+                Not relevant for interpolated content.''')
+        ] = None
+    footer: Annotated[
+            str | None,
+            Note('''A value to insert if after every slot instance if, and
+                only if, the slot was non-empty.
+
+                Not relevant for interpolated content.''')
+        ] = None
+
+    def apply_slot_preamble(self, is_first_instance: bool) -> tuple[str, ...]:
+        """Normalizes ourselves into a tuple containing everything
+        required from any header and/or prefix.
         """
+        # Note: we're explicitly spelling out the logic table here both because
+        # it makes for clean code and because it executes faster.
         prefix = self.prefix
-        if prefix is not None:
-            yield prefix
+        if is_first_instance:
+            header = self.header
+            if header is not None and prefix is not None:
+                return (header, prefix)
+            elif header is not None:
+                return (header,)
+            elif prefix is not None:
+                return (prefix,)
+            else:
+                return ()
 
-    def apply_suffix_iter(self) -> Iterator[str]:
-        """If a suffix is defined, yields it. Otherwise, does nothing.
+        else:
+            if prefix is None:
+                return ()
+            else:
+                return(prefix,)
+
+    def apply_slot_postamble(self, is_last_instance: bool) -> tuple[str, ...]:
+        """Normalizes ourselves into a tuple containing everything
+        required from any suffix and/or delimiter and/or footer.
         """
+        # Note: we're explicitly spelling out the logic table here both because
+        # it makes for clean code and because it executes faster.
         suffix = self.suffix
-        if suffix is not None:
-            yield suffix
 
-    def apply_affix(self, val: str | None) -> tuple[str, ...]:
-        """For the given val, inserts any defined prefix and/or suffix.
-        If val is None, returns an empty tuple.
+        if is_last_instance:
+            footer_or_delimiter = self.footer
+        else:
+            footer_or_delimiter = self.delimiter
+
+        if footer_or_delimiter is not None and suffix is not None:
+            return (suffix, footer_or_delimiter)
+        elif footer_or_delimiter is not None:
+            return (footer_or_delimiter,)
+        elif suffix is not None:
+            return (suffix,)
+        else:
+            return ()
+
+    def apply_content_affix(self, val: str | None) -> tuple[str, ...]:
+        """For the given content val, inserts any defined prefix and/or
+        suffix. If val is None, returns an empty tuple.
 
         Note that tuples are faster for list.extend than both iterators
         and lists, at least for these small sizes.
+
+        Also note that this **only applies the affixes!** This does
+        **not** apply any delimiter, header, or footer.
         """
         if val is None:
             return ()
