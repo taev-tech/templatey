@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from dataclasses import FrozenInstanceError
+from dataclasses import dataclass
 from dataclasses import is_dataclass
 from typing import get_type_hints
 from unittest.mock import MagicMock
@@ -15,8 +16,9 @@ from templatey._types import Var
 from templatey._types import is_template_class
 from templatey._types import is_template_class_xable
 from templatey._types import is_template_instance_xable
-from templatey.templates import ParseConfig
 from templatey.templates import SegmentModifier
+from templatey.templates import TemplateParseConfig
+from templatey.templates import TemplateResourceConfig
 from templatey.templates import make_template_definition
 from templatey.templates import template
 
@@ -72,44 +74,11 @@ class TestIsTemplateInstance:
 
 
 class TestTemplate:
-    """template() must have the expected API. (Added 2025-10-12: must
-    also include backcompat for legacy API; to be removed at some future
-    date).
+    """These are legacy backcompat tests for the deprecated
+    ``@template()`` decorator; to be removed at some future date.
     """
 
     def test_works(self):
-        """The template decorator must complete without error and
-        result in a template class.
-        """
-        locator = object()
-
-        @template(locator, fake_render_config)
-        class FakeTemplate:
-            ...
-
-        assert isinstance(FakeTemplate, type)
-        assert is_template_class_xable(FakeTemplate)
-        assert FakeTemplate._templatey_signature.resource_locator is locator
-
-    def test_supports_passthrough(self):
-        """Additional params must be passed through to the dataclass
-        decorator.
-        """
-        locator = object()
-
-        @template(locator, fake_render_config, frozen=True)
-        class FakeTemplate:
-            foo: Var[str]
-
-        instance = FakeTemplate(foo='foo')
-        with pytest.raises(FrozenInstanceError):
-            instance.foo = 'bar'  # type: ignore
-
-        assert isinstance(FakeTemplate, type)
-        assert is_template_class_xable(FakeTemplate)
-        assert FakeTemplate._templatey_signature.resource_locator is locator
-
-    def test_legacy_works(self):
         """The template decorator must complete without error and
         result in a template class.
         """
@@ -123,7 +92,7 @@ class TestTemplate:
         assert is_template_class_xable(FakeTemplate)
         assert FakeTemplate._templatey_signature.resource_locator is locator
 
-    def test_legacy_supports_passthrough(self):
+    def test_supports_passthrough(self):
         """Additional params must be passed through to the dataclass
         decorator.
         """
@@ -151,16 +120,15 @@ class TestMakeTemplateDefinition:
         exiting the template definition maker, along with the initial
         values.
         """
+        @dataclass
         class Foo:
             foo: Var[str]
 
         retval = make_template_definition(
             Foo,
-            dataclass_kwargs={},
-            template_resource_locator=object(),
             render_config=fake_render_config,
-            parse_config=None,
-            env_config=None)
+            parse_config=TemplateParseConfig(),
+            resource_config=TemplateResourceConfig(resource_locator=object()))
         assert is_template_class(retval)
         assert is_template_class_xable(retval)
         # This is weird, but the point here is to make sure that the attribute
@@ -175,6 +143,7 @@ class TestMakeTemplateDefinition:
         """Segment modifiers, if defined, must be added to the template
         signature during the initial definition.
         """
+        @dataclass
         class Foo:
             foo: Var[str]
 
@@ -185,11 +154,10 @@ class TestMakeTemplateDefinition:
 
         retval = make_template_definition(
             Foo,
-            dataclass_kwargs={},
-            template_resource_locator=object(),
             render_config=fake_render_config,
-            parse_config=ParseConfig(segment_modifiers=tuple(modifiers)),
-            env_config=None)
+            parse_config=TemplateParseConfig(
+                segment_modifiers=tuple(modifiers)),
+            resource_config=TemplateResourceConfig(resource_locator=object()))
 
         assert is_template_class_xable(retval)
         assert retval._templatey_signature.parse_config.segment_modifiers == \
@@ -206,31 +174,29 @@ class TestMakeTemplateDefinition:
         class Foo:
             foo: Var[str]
 
+        @dataclass
         class Bar:
             foo: Slot[Foo]
 
         retval = make_template_definition(
             Bar,
-            dataclass_kwargs={},
-            template_resource_locator=object(),
             render_config=fake_render_config,
-            parse_config=None,
-            env_config=None)
+            parse_config=TemplateParseConfig(),
+            resource_config=TemplateResourceConfig(resource_locator=object()))
         assert is_template_class_xable(retval)
 
     def test_forward_ref_works(self):
         """Slots must be definable using forward references.
         """
+        @dataclass
         class Bar:
             foo: Slot[Foo]
 
         retval = make_template_definition(
             Bar,
-            dataclass_kwargs={},
-            template_resource_locator=object(),
             render_config=fake_render_config,
-            parse_config=None,
-            env_config=None)
+            parse_config=TemplateParseConfig(),
+            resource_config=TemplateResourceConfig(resource_locator=object()))
         assert is_template_class_xable(retval)
 
         # Mostly just here to make sure the typechecker doesn't freak out;
@@ -241,39 +207,16 @@ class TestMakeTemplateDefinition:
 
         assert is_template_class_xable(Foo)
 
-    def test_is_dataclass(self):
-        """The template maker must also convert the class to a
-        dataclass.
+    def test_is_not_dataclass(self):
+        """The template maker must not convert the class to a dataclass
+        on its own.
         """
         class FakeTemplate:
             foo: Var[str]
 
         retval = make_template_definition(
             FakeTemplate,
-            dataclass_kwargs={},
-            template_resource_locator=object(),
             render_config=fake_render_config,
-            parse_config=None,
-            env_config=None)
-        assert is_dataclass(retval)
-
-    def test_supports_passthrough(self):
-        """Dataclass kwargs must be forwarded to the dataclass
-        constructor.
-        """
-        class FakeTemplate:
-            foo: Var[str]
-
-        template_cls = make_template_definition(
-            FakeTemplate,
-            dataclass_kwargs={'frozen': True, 'slots': True},
-            template_resource_locator=object(),
-            render_config=fake_render_config,
-            parse_config=None,
-            env_config=None)
-
-        instance = template_cls(foo='foo')  # type: ignore
-        with pytest.raises(FrozenInstanceError):
-            instance.foo = 'bar'  # type: ignore
-
-        assert hasattr(instance, '__slots__')
+            parse_config=TemplateParseConfig(),
+            resource_config=TemplateResourceConfig(resource_locator=object()))
+        assert not is_dataclass(retval)

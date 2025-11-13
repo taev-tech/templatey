@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import functools
 import inspect
 import logging
 import sys
@@ -13,6 +12,7 @@ from collections.abc import Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import _MISSING_TYPE
+from dataclasses import KW_ONLY
 from dataclasses import Field
 from dataclasses import dataclass
 from dataclasses import field
@@ -22,16 +22,25 @@ from typing import Any
 from typing import Literal
 from typing import Protocol
 from typing import TypedDict
+from typing import TypeGuard
 from typing import Unpack
 from typing import dataclass_transform
 from typing import overload
 
+import dcei
+from dcei import DataclassKwargs
+from dcei import DceiClassConfigDict
+from dcei import DceiConfigMixin
+from dcei import DceiConfigProtocol
+from dcei import ext_dataclass
+from dcei import ext_field
 from docnote import DocnoteConfig
 from docnote import Note
 from docnote import docnote
 
 from templatey._signature import TemplateSignature
 from templatey._types import TemplateClass
+from templatey._types import TemplateIntersectable
 from templatey.interpolators import NamedInterpolator
 from templatey.modifiers import SegmentModifier
 from templatey.parser import InterpolationConfig
@@ -39,8 +48,12 @@ from templatey.parser import InterpolationConfig
 logger = logging.getLogger(__name__)
 
 if typing.TYPE_CHECKING:
+    from _typeshed import DataclassInstance
+
     from templatey.environments import AsyncTemplateLoader
     from templatey.environments import SyncTemplateLoader
+else:
+    DataclassInstance = object
 
 _CLOSURE_ANCHORS: ContextVar[dict[TemplateClass, FrameType]] = ContextVar(
     '_CLOSURE_ANCHORS')
@@ -102,8 +115,15 @@ class InterpolationTransformer[T](Protocol):
 
 
 @dataclass(slots=True)
-class FieldConfig[T]:
+class TemplateFieldConfig[T]:
     transformer: InterpolationTransformer[T] | None = None
+
+
+FieldConfig: Annotated[
+        type[TemplateFieldConfig],
+        DocnoteConfig(include_in_docs=False),
+        Note('Deprecated. Use ``TemplateTemplateFieldConfig`` instead.')
+    ] = TemplateFieldConfig
 
 
 class _DataclassFieldKwargs(TypedDict, total=False):
@@ -119,79 +139,10 @@ class _DataclassFieldKwargs14(_DataclassFieldKwargs, TypedDict, total=False):
     doc: str | None
 
 
-# The following is adapted directly from typeshed. We did some formatting
-# updates, and inserted our transformer param.
-if sys.version_info >= (3, 14):
-    @overload
-    def template_field[_T](
-            field_config: FieldConfig[_T] = ...,
-            /, *,
-            default: _T,
-            default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
-            **field_kwargs: Unpack[_DataclassFieldKwargs14]
-            ) -> _T: ...
-    @overload
-    def template_field[_T](
-            field_config: FieldConfig[_T] = ...,
-            /, *,
-            default: Literal[_MISSING_TYPE.MISSING] = ...,
-            default_factory: Callable[[], _T],
-            **field_kwargs: Unpack[_DataclassFieldKwargs14]
-            ) -> _T: ...
-    @overload
-    def template_field[_T](
-            field_config: FieldConfig[_T] = ...,
-            /, *,
-            default: Literal[_MISSING_TYPE.MISSING] = ...,
-            default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
-            **field_kwargs: Unpack[_DataclassFieldKwargs14]
-            ) -> Any: ...
-
-# This is technically only valid for >=3.10, but we require that anyways
-else:
-    @overload
-    def template_field[_T](
-            field_config: FieldConfig[_T] = ...,
-            /, *,
-            default: _T,
-            default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
-            **field_kwargs: Unpack[_DataclassFieldKwargs]
-            ) -> _T: ...
-    @overload
-    def template_field[_T](
-            field_config: FieldConfig[_T] = ...,
-            /, *,
-            default: Literal[_MISSING_TYPE.MISSING] = ...,
-            default_factory: Callable[[], _T],
-            **field_kwargs: Unpack[_DataclassFieldKwargs]
-            ) -> _T: ...
-    @overload
-    def template_field[_T](
-            field_config: FieldConfig[_T] = ...,
-            /, *,
-            default: Literal[_MISSING_TYPE.MISSING] = ...,
-            default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
-            **field_kwargs: Unpack[_DataclassFieldKwargs]
-            ) -> Any: ...
-
-
-def template_field(
-        field_config: FieldConfig | None = None,
-        /, *,
-        metadata: Mapping[Any, Any] | None = None,
-        **field_kwargs):
-    if field_config is None:
-        field_config = FieldConfig()
-
-    if metadata is None:
-        metadata = {'templatey.field_config': field_config}
-
-    else:
-        metadata = {
-            **metadata,
-            'templatey.field_config': field_config}
-
-    return field(**field_kwargs, metadata=metadata)
+template_field: Annotated[
+    ...,
+    DocnoteConfig(include_in_docs=False),
+    Note('Deprecated. Use ``ext_field`` from dceiref instead.')] = ext_field
 
 
 # The following is adapted directly from typeshed. We did some formatting
@@ -256,7 +207,7 @@ else:
             ) -> Any: ...
 
 
-# DEPRECATED. Use ``template_field`` instead.
+# DEPRECATED. Use dcei's ``ext_field`` instead.
 @docnote(DocnoteConfig(include_in_docs=False))
 def param(
         *,
@@ -264,7 +215,7 @@ def param(
         prerenderer: InterpolationTransformer | None = None,
         metadata: Mapping[Any, Any] | None = None,
         **field_kwargs):
-    field_config = FieldConfig(transformer=prerenderer)
+    field_config = TemplateFieldConfig(transformer=prerenderer)
 
     if metadata is None:
         metadata = {'templatey.field_config': field_config}
@@ -290,11 +241,11 @@ class _DataclassKwargs(TypedDict, total=False):
     weakref_slot: bool
 
 
-@overload
+# Deprecated. Use dcei's ``ext_dataclass`` instead.
 @docnote(DocnoteConfig(include_in_docs=False))
-@dataclass_transform(field_specifiers=(template_field, param, field, Field))
+@dataclass_transform(field_specifiers=(ext_field, param, field, Field))
 def template[T: type](
-        config: TemplateConfig,
+        legacy_config: TemplateConfig,
         template_resource_locator: object,
         /, *,
         loader: Annotated[
@@ -321,35 +272,8 @@ def template[T: type](
         ) -> Callable[[T], T]:
     """Deprecated signature using deprecated jack-of-all-trades
     ``TemplateConfig`` instances.
-    """
-    ...
 
-
-@overload
-@docnote(DocnoteConfig(include_in_docs=False))
-@dataclass_transform(field_specifiers=(template_field, param, field, Field))
-def template[T: type](
-        template_resource_locator: object,
-        render_config: RenderConfig,
-        /,
-        *optional_configs: ParseConfig | EnvConfig,
-        **dataclass_kwargs: Unpack[_DataclassKwargs]
-        ) -> Callable[[T], T]:
-    """Constructs a template class."""
-    ...
-
-
-@dataclass_transform(field_specifiers=(template_field, param, field, Field))
-def template[T: type](
-        template_config_or_locator: TemplateConfig | object,
-        render_config_or_locator: RenderConfig | object,
-        /,
-        *optional_configs: ParseConfig | EnvConfig,
-        loader: AsyncTemplateLoader | SyncTemplateLoader | None = None,
-        segment_modifiers: Sequence[SegmentModifier] | None = None,
-        **dataclass_kwargs: Unpack[_DataclassKwargs]
-        ) -> Callable[[T], T]:
-    """This both transforms the decorated class into a stdlib dataclass
+    This both transforms the decorated class into a stdlib dataclass
     and declares it as a templatey template.
 
     **Note that unlike the stdlib dataclass decorator, this defaults to
@@ -359,60 +283,36 @@ def template[T: type](
     free performance benefit. **If weakref support is required, be sure
     to pass ``weakref_slot=True``.
     """
-    if isinstance(template_config_or_locator, TemplateConfig):
-        legacy_config = template_config_or_locator
-        if segment_modifiers is not None:
-            segment_modifiers = tuple(segment_modifiers)
+    if segment_modifiers is not None:
+        segment_modifiers = tuple(segment_modifiers)
 
-        template_resource_locator = render_config_or_locator
-        render_config = RenderConfig(
-            variable_escaper=legacy_config.variable_escaper,
-            content_verifier=legacy_config.content_verifier)
-        parse_config = ParseConfig(
-            interpolator=legacy_config.interpolator,
-            segment_modifiers=segment_modifiers or ())
-        env_config = EnvConfig(loader=loader)
-
-    else:
-        template_resource_locator = template_config_or_locator
-
-        if not isinstance(render_config_or_locator, RenderConfig):
-            raise TypeError('Second arg must be render config!')
-
-        render_config = render_config_or_locator
-        parse_config: ParseConfig | None = None
-        env_config: EnvConfig | None = None
-
-        for optional_config in optional_configs:
-            if isinstance(optional_config, ParseConfig):
-                if parse_config is not None:
-                    raise TypeError('Cannot have duplicate parse configs!')
-                parse_config = optional_config
-
-            elif isinstance(optional_config, EnvConfig):
-                if env_config is not None:
-                    raise TypeError('Cannot have duplicate env configs!')
-                env_config = optional_config
-
-            else:
-                raise TypeError('*args must be parse or env configs!')
+    render_config = TemplateRenderConfig(
+        variable_escaper=legacy_config.variable_escaper,
+        content_verifier=legacy_config.content_verifier)
+    parse_config = TemplateParseConfig(
+        interpolator=legacy_config.interpolator,
+        segment_modifiers=segment_modifiers or ())
+    resource_config = TemplateResourceConfig(
+        resource_locator=template_resource_locator,
+        loader=loader)
 
     # As per docs, we default to using slots, since it makes everything
     # faster
     if 'slots' not in dataclass_kwargs:
         dataclass_kwargs['slots'] = True
 
-    return functools.partial(
-        make_template_definition,
-        dataclass_kwargs=dataclass_kwargs,
-        template_resource_locator=template_resource_locator,
-        render_config=render_config,
-        parse_config=parse_config,
-        env_config=env_config)
+    # Note that ``ext_dataclass`` returns a decorator (it is itself a
+    # second-order decorator), so we don't need to do anything with the class
+    # itself, nor do we need a partial
+    return ext_dataclass(
+        parse_config,
+        resource_config,
+        render_config,
+        **dataclass_kwargs)
 
 
-# DEPRECATED. Use ``ParseConfig``, ``RenderConfig``, and ``EnvConfig``
-# instead.
+# DEPRECATED. Use ``TemplateParseConfig``, ``TemplateRenderConfig``, and
+# ``TemplateResourceConfig`` instead.
 @docnote(DocnoteConfig(include_in_docs=False))
 @dataclass(frozen=True)
 class TemplateConfig:
@@ -439,7 +339,7 @@ class TemplateConfig:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ParseConfig:
+class TemplateParseConfig(DceiConfigMixin):
     """Parse configs specify how the loaded template text should be
     parsed into a template resource. These can be used to modify all
     segments of a template, change which interpolators to use, etc.
@@ -464,12 +364,22 @@ class ParseConfig:
         ] = ()
 
 
+ParseConfig: Annotated[
+        type[TemplateParseConfig],
+        DocnoteConfig(include_in_docs=False),
+        Note('Deprecated. Use ``TemplateParseConfig`` instead.')
+    ] = TemplateParseConfig
+
+
 @dataclass(frozen=True, kw_only=True)
-class RenderConfig:
+class TemplateRenderConfig(DceiConfigMixin):
     """Render configs control the behavior of the templatey renderer.
     These can be used to modify variable escaping, content verification,
     etc. These are generally specific to the output format of the
     template (for example, this might be html-specific).
+
+    Note that these are separated from ``TemplateResourceConfig``s
+    because they are intended to be reused.
     """
     variable_escaper: Annotated[
         VariableEscaper,
@@ -484,13 +394,32 @@ class RenderConfig:
             it allows, for example, to allowlist certain HTML tags.''')]
 
 
-@dataclass(frozen=True, kw_only=True)
-class EnvConfig:
-    """Environment configs control the behavior of the render
-    environment. They can be used, for example, to specify and explicit
+RenderConfig: Annotated[
+        type[TemplateRenderConfig],
+        DocnoteConfig(include_in_docs=False),
+        Note('Deprecated. Use ``TemplateRenderConfig`` instead.')
+    ] = TemplateRenderConfig
+
+
+@dataclass(frozen=True)
+class TemplateResourceConfig(DceiConfigProtocol):
+    """Resource configs control the specific resource(s) used for a
+    template. At a bare minimum, they must specify the template resource
+    locator to use for the template body.
+
+    To be considered a template, exactly one ``TemplateResourceConfig``
+    instance must be passed to the ``ext_dataclass`` decorator.
+
+    They can also be used, for example, to specify and explicit
     loader for a template, allowing templates to be packaged within a
     library.
     """
+    resource_locator: Annotated[
+            object,
+            Note('''This must be understood by your template loader, whether
+                an explicitly-passed one as part of this env config, or the
+                default one defined on the template environment itself.''')]
+    _: KW_ONLY
     loader: Annotated[
             AsyncTemplateLoader | SyncTemplateLoader | None,
             Note('''Explicit template loaders can be passed to a template
@@ -501,35 +430,66 @@ class EnvConfig:
                 template loader of the end user's codebase.''')
         ] = None
 
+    def postprocess_dataclass(
+            self,
+            cls: type[DataclassInstance],
+            cls_configs: DceiClassConfigDict,
+            dataclass_kwargs: DataclassKwargs
+            ) -> TypeGuard[type[TemplateIntersectable]]:
+        parse_config: TemplateParseConfig | None = cls_configs.get(
+            TemplateParseConfig)
+        if parse_config is None:
+            parse_config = TemplateParseConfig()
 
-@dataclass_transform(field_specifiers=(template_field, param, field, Field))
+        try:
+            render_config: TemplateRenderConfig = cls_configs[
+                TemplateRenderConfig]
+        except KeyError as exc:
+            exc.add_note(
+                'Templates must pass both a render config **and** a resource '
+                + 'config to ``ext_dataclass``!')
+            raise exc
+
+        make_template_definition(
+            cls,
+            render_config=render_config,
+            parse_config=parse_config,
+            resource_config=self)
+        return True
+
+
+EnvConfig: Annotated[
+        type[TemplateResourceConfig],
+        DocnoteConfig(include_in_docs=False),
+        Note('Deprecated. Use ``TemplateResourceConfig`` instead.')
+    ] = TemplateResourceConfig
+
+
 def make_template_definition[T: type](
         cls: T,
         *,
-        dataclass_kwargs: _DataclassKwargs,
-        # Note: needs to be understandable by template loader
-        template_resource_locator: object,
-        render_config: RenderConfig,
-        parse_config: ParseConfig | None,
-        env_config: EnvConfig | None,
+        render_config: TemplateRenderConfig,
+        parse_config: TemplateParseConfig,
+        resource_config: TemplateResourceConfig,
         ) -> T:
     """Programmatically creates a template definition. Converts the
     requested class into a dataclass, passing along ``dataclass_kwargs``
     to the dataclass constructor. Then performs some templatey-specific
     bookkeeping. Returns the resulting dataclass.
     """
-    if env_config is None:
-        explicit_loader = None
-    else:
-        explicit_loader = env_config.loader
+    explicit_loader = resource_config.loader
 
-    cls = dataclass(**dataclass_kwargs)(cls)
     cls._templatey_signature = TemplateSignature(
-        parse_config=parse_config or ParseConfig(),
+        parse_config=parse_config,
         render_config=render_config,
-        resource_locator=template_resource_locator,
+        resource_locator=resource_config.resource_locator,
         explicit_loader=explicit_loader)
 
+    # Closure anchors are important for python <3.14 (when deferred annotation
+    # evaluation was introduced). Because we resolve the type hints in a
+    # completely different context than the one they're defined in, we need
+    # to have a way to hold on to the original closure's locals if a template
+    # was defined in one.
     closure_anchor = _CLOSURE_ANCHORS.get(None)
     if closure_anchor is not None:
         upstack_frame = _get_first_frame_from_other_module()
@@ -734,7 +694,7 @@ def _get_first_frame_from_other_module() -> FrameType | None:
         # Technically not 100% correct since we might have reloads, but...
         # I mean at that point, good fucking luck with closures.
         this_module = upstack_module = sys.modules[__name__]
-        while upstack_module is this_module:
+        while upstack_module is this_module or upstack_module is dcei:
             if upstack_frame is None:
                 return None
 

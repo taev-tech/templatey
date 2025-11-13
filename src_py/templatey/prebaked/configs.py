@@ -11,8 +11,8 @@ from docnote import Note
 
 from templatey.exceptions import BlockedContentValue
 from templatey.interpolators import NamedInterpolator
-from templatey.templates import ParseConfig
-from templatey.templates import RenderConfig
+from templatey.templates import TemplateParseConfig
+from templatey.templates import TemplateRenderConfig
 
 ALLOWABLE_HTML_CONTENT_TAGS: ContextVar[set[str]] = ContextVar(
     'ALLOWABLE_HTML_CONTENT_TAGS', default={  # noqa: B039
@@ -74,30 +74,30 @@ class _HtmlVerifierParser(HTMLParser):
 
 
 trusted_text: Annotated[
-        RenderConfig,
+        TemplateRenderConfig,
         Note('''This prebaked render config includes **no escaping or
             verification**.
 
             Use this if, and **only if**, you trust all variables and
             content passed to the template!''')
-    ] = RenderConfig(
+    ] = TemplateRenderConfig(
         variable_escaper=noop_escaper,
         content_verifier=noop_verifier)
 
 
 html: Annotated[
-        RenderConfig,
+        TemplateRenderConfig,
         Note('''This prebaked render config uses a dedicated HTML escaper and
             verifier, with specific allowlisted HTML tags for context.''')
-    ] = RenderConfig(
+    ] = TemplateRenderConfig(
         variable_escaper=html_escaper,
         content_verifier=html_verifier)
 
 
 unicon: Annotated[
-        ParseConfig,
+        TemplateParseConfig,
         Note('''This prebaked parse config uses unicode control characters as
             the interpolator. Use it if you need to use curly braces within the
             template text. One example use case would be using a template as a
             CSS preprocessor.''')
-    ] = ParseConfig(interpolator=NamedInterpolator.UNICODE_CONTROL)
+    ] = TemplateParseConfig(interpolator=NamedInterpolator.UNICODE_CONTROL)

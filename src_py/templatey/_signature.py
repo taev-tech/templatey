@@ -16,8 +16,8 @@ if typing.TYPE_CHECKING:
     from templatey._slot_tree import SlotTreeNode
     from templatey.environments import AsyncTemplateLoader
     from templatey.environments import SyncTemplateLoader
-    from templatey.templates import ParseConfig
-    from templatey.templates import RenderConfig
+    from templatey.templates import TemplateParseConfig
+    from templatey.templates import TemplateRenderConfig
 
 type GroupedTemplateInvocations = dict[TemplateClass, list[Provenance]]
 type TemplateLookupByID = dict[TemplateClassInstanceID, TemplateClassInstance]
@@ -32,8 +32,8 @@ class TemplateSignature:
     available at all points of the template's lifecycle.
     """
     # These are all available at template definition time and set then
-    parse_config: ParseConfig
-    render_config: RenderConfig
+    parse_config: TemplateParseConfig
+    render_config: TemplateRenderConfig
     # Note: whatever kind of object this is, it needs to be understood by the
     # template loader defined in the template environment.
     # In theory we could make this a typevar, but in practice the overarching
@@ -41,8 +41,8 @@ class TemplateSignature:
     # which python doesn't currently support.
     resource_locator: object
     # Used primarily for libraries shipping redistributable templates
-    # TODO: this should be moved into an EnvConfig object here instead of
-    # extracted from it.
+    # TODO: this should be moved into an TemplateResourceConfig object here
+    # instead of extracted from it.
     explicit_loader: AsyncTemplateLoader | SyncTemplateLoader | None
 
     # These are all set during the template loading process, in stages, as

@@ -64,6 +64,18 @@ wheels = [
 ]
 
 [[package]]
+name = "dceiref"
+version = "2025.11.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "docnote" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3c/93/ca78f4c6aae00f69c616bdee94392b0df1e412db18007c820a3b6dc866cb/dceiref-2025.11.9.0.tar.gz", hash = "sha256:8f0eca8245d59e9ff0165ad84c2e5676b960a6ced12bd51a86a94a168db66ba4", size = 4288, upload-time = "2025-11-09T12:52:03.842Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e8/6d/ee9e82be6737b0e16a8c8c1e73b86d43c75d374a472fa9abd9f38dc42c63/dceiref-2025.11.9.0-py3-none-any.whl", hash = "sha256:2215baff19371bcb6c6cb864172e0b524a22fbc4f37da0c888adf846717f8af6", size = 4431, upload-time = "2025-11-09T12:52:02.805Z" },
+]
+
+[[package]]
 name = "docnote"
 version = "2025.9.11.0"
 source = { registry = "https://pypi.org/simple" }
@@ -305,6 +317,7 @@ wheels = [
 name = "templatey"
 source = { editable = "." }
 dependencies = [
+    { name = "dceiref" },
     { name = "docnote" },
     { name = "typing-extensions" },
 ]
@@ -334,6 +347,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", marker = "extra == 'async'", specifier = ">=4.6.2" },
+    { name = "dceiref", specifier = ">=2025.11.9.0" },
     { name = "docnote", specifier = ">=2025.8.5.0" },
     { name = "typing-extensions", specifier = ">=4.12.2" },
 ]

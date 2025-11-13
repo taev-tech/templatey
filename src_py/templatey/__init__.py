@@ -10,30 +10,33 @@ from templatey._types import TemplateClassInstance
 from templatey._types import Var
 from templatey.environments import RenderEnvironment
 from templatey.templates import ComplexContent
-from templatey.templates import FieldConfig
 from templatey.templates import InjectedValue
-from templatey.templates import TemplateConfig
+from templatey.templates import TemplateConfig  #  type: ignore  # noqa: F401
+from templatey.templates import TemplateFieldConfig
+from templatey.templates import TemplateParseConfig
+from templatey.templates import TemplateRenderConfig
+from templatey.templates import TemplateResourceConfig
 from templatey.templates import anchor_closure_scope
 from templatey.templates import param  #  type: ignore  # noqa: F401
-from templatey.templates import template
-from templatey.templates import template_field
+from templatey.templates import template  #  type: ignore  # noqa: F401
+from templatey.templates import template_field  #  type: ignore  # noqa: F401
 
 __all__ = [
     'ComplexContent',
     'Content',
     'DynamicClassSlot',
-    'FieldConfig',
     'InjectedValue',
     'RenderEnvironment',
     'Slot',
     'TemplateClass',
     'TemplateClassInstance',
-    'TemplateConfig',
+    'TemplateFieldConfig',
+    'TemplateParseConfig',
+    'TemplateRenderConfig',
+    'TemplateResourceConfig',
     'Var',
     'anchor_closure_scope',
     'prebaked',
-    'template',
-    'template_field',
 ]
 
 

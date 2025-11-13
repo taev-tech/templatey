@@ -23,7 +23,7 @@ from templatey._types import InterfaceAnnotationFlavor
 from templatey._types import Slot
 from templatey._types import TemplateClass
 from templatey._types import Var
-from templatey.templates import FieldConfig
+from templatey.templates import TemplateFieldConfig
 from templatey.templates import get_closure_locals
 
 if typing.TYPE_CHECKING:
@@ -38,7 +38,7 @@ type SlotFieldAnnotation = (
 @dataclass(slots=True, frozen=True, kw_only=True)
 class NormalizedField:
     name: str
-    config: FieldConfig
+    config: TemplateFieldConfig
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -125,10 +125,10 @@ class NormalizedFieldset:
 
                 # In case it isn't obvious, the .get() here is because we don't
                 # require all fields to use the ``template_field`` specifier.
-                field_config: FieldConfig | None = template_field.metadata.get(
-                    'templatey.field_config')
+                field_config: TemplateFieldConfig | None = \
+                    template_field.metadata.get(TemplateFieldConfig)
                 if field_config is None:
-                    field_config = FieldConfig()
+                    field_config = TemplateFieldConfig()
 
                 # Just for maintainability, we're doing this first here and
                 # then replacing it for slots; that way, we don't have a bunch

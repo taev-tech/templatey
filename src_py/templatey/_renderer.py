@@ -35,7 +35,7 @@ from templatey.parser import InterpolationConfig
 from templatey.parser import ParsedTemplateResource
 from templatey.templates import ComplexContent
 from templatey.templates import InjectedValue
-from templatey.templates import RenderConfig
+from templatey.templates import TemplateRenderConfig
 
 logger = logging.getLogger(__name__)
 
@@ -397,7 +397,7 @@ class _RenderStackFrame:
     """
     """
     instance: TemplateClassInstance
-    render_config: RenderConfig
+    render_config: TemplateRenderConfig
     signature: TemplateSignature
     provenance: Provenance
     transformers: NamedTuple
@@ -539,7 +539,7 @@ def _render_complex_content(
         complex_content: ComplexContent,
         render_ctx: RenderContext,
         provenance: Provenance,
-        render_config: RenderConfig,
+        render_config: TemplateRenderConfig,
         interpolation_config: InterpolationConfig,
         transformers: NamedTuple,
         ) -> Iterable[str]:
@@ -592,7 +592,7 @@ def _build_render_frame_for_func_result(  # noqa: C901
         enclosing_provenance: Provenance,
         abstract_call: InterpolatedFunctionCall,
         execution_result: FuncExecutionResult,
-        render_config: RenderConfig,
+        render_config: TemplateRenderConfig,
         error_collector: ErrorCollector
         ) -> _RenderStackFrame | None:
     """This constructs a _RenderNode for the given execution result and
@@ -689,7 +689,7 @@ def _apply_format(raw_value, config: InterpolationConfig) -> str:
 
 def _coerce_injected_value(
         injected_value: InjectedValue,
-        render_config: RenderConfig
+        render_config: TemplateRenderConfig
         ) -> str:
     """InjectedValue instances are used within the return value of
     environment functions and complex content to indicate that the

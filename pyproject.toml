@@ -7,6 +7,7 @@ requires-python = ">= 3.12"
 readme = "README.md"
 
 dependencies = [
+    "dceiref>=2025.11.9.0",
     "docnote>=2025.8.5.0",
     "typing_extensions>=4.12.2",
     # I really wanted to restrict this to ONLY the situations where it's
