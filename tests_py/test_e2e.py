@@ -8,23 +8,26 @@ import re
 from dataclasses import dataclass
 
 import pytest
+from dcei import ext_dataclass
+from dcei import ext_field
 
 from templatey import Content
 from templatey import DynamicClassSlot
 from templatey import Slot
 from templatey import TemplateFieldConfig
+from templatey import TemplateResourceConfig
 from templatey import Var
 from templatey import template
-from templatey import template_field
 from templatey.environments import RenderEnvironment
 from templatey.interpolators import NamedInterpolator
 from templatey.modifiers import EnvFuncInvocationRef
 from templatey.modifiers import SegmentModifier
 from templatey.modifiers import SegmentModifierMatch
 from templatey.parser import TemplateInstanceDataRef
+from templatey.prebaked.configs import html
 from templatey.prebaked.env_funcs import inject_templates
 from templatey.prebaked.loaders import DictTemplateLoader
-from templatey.prebaked.template_configs import html
+from templatey.prebaked.template_configs import html as html_legacy
 from templatey.prebaked.template_configs import html_escaper
 from templatey.prebaked.template_configs import html_verifier
 from templatey.templates import TemplateConfig
@@ -125,13 +128,15 @@ class TestApiE2E:
             </html>
             '''
 
-        @template(html, 'nav')
+        @ext_dataclass(
+            html,
+            TemplateResourceConfig('nav'))
         class NavTemplate:
             target: Content[str]
             name: Content[str]
             classes: Var[str]
 
-        @template(html, 'page')
+        @template(html_legacy, 'page')
         class PageTemplate:
             name: Var[str]
             nav: Slot[NavTemplate]
@@ -223,13 +228,13 @@ class TestApiE2E:
             </html>
             '''
 
-        @template(html, 'nav')
+        @template(html_legacy, 'nav')
         class NavTemplate:
             target: Content[str]
             name: Content[str]
             classes: Var[str]
 
-        @template(html, 'page')
+        @template(html_legacy, 'page')
         class PageTemplate:
             name: Var[str]
             nav: Slot[NavTemplate]
@@ -323,13 +328,13 @@ class TestApiE2E:
             </html>
             '''
 
-        @template(html, 'nav')
+        @template(html_legacy, 'nav')
         class NavTemplate:
             target: Content[str]
             name: Content[str]
             classes: Var[str]
 
-        @template(html, 'page')
+        @template(html_legacy, 'page')
         class PageTemplate:
             name: Var[str]
             nav: Content[NavTemplate]
@@ -417,17 +422,23 @@ class TestApiE2E:
             </html>
             '''
 
-        @template(html, 'nav1')
+        @ext_dataclass(
+            html,
+            TemplateResourceConfig('nav1'))
         class NavTemplate1:
             name: Content[str]
             classes: Var[str]
 
-        @template(html, 'nav2')
+        @ext_dataclass(
+            html,
+            TemplateResourceConfig('nav2'))
         class NavTemplate2:
             name: Content[str]
             classes: Var[str]
 
-        @template(html, 'page')
+        @ext_dataclass(
+            html,
+            TemplateResourceConfig('page'))
         class PageTemplate:
             name: Var[str]
             nav: Slot[NavTemplate1 | NavTemplate2]
@@ -503,7 +514,7 @@ class TestApiE2E:
                 **var.dict_)}
             '''
 
-        @template(html, 'test_template')
+        @template(html_legacy, 'test_template')
         class TestTemplate:
             single_string: Content[str]
             multistring: Content[list[str]]
@@ -542,7 +553,7 @@ class TestApiE2E:
         """
         slot_text = '{var.value}'
 
-        @template(html, 'slot_template')
+        @template(html_legacy, 'slot_template')
         class SlotTemplate:
             value: Var[str]
 
@@ -558,7 +569,7 @@ class TestApiE2E:
             slot.nested_1: __suffix__=';\n'}{
             slot.nested_2: __prefix__='!!!!'}''')
 
-        @template(html, 'test_template')
+        @template(html_legacy, 'test_template')
         class OuterTemplate:
             configged: Content[str | None]
             omitted: Content[str | None]
@@ -595,16 +606,18 @@ class TestApiE2E:
             var.omitted_var_value}{
             content.illegal_content_tag}'''
 
-        @template(html, 'test_template')
+        @ext_dataclass(
+            html,
+            TemplateResourceConfig('test_template'))
         class RendererTemplate:
-            good_content: Content[bool] = template_field(TemplateFieldConfig(
+            good_content: Content[bool] = ext_field(TemplateFieldConfig(
                 transformer=
                     lambda value: '<p>yes</p>' if value else '<p>no</p>'))
-            borderline_var: Var[bool] = template_field(TemplateFieldConfig(
+            borderline_var: Var[bool] = ext_field(TemplateFieldConfig(
                 transformer=lambda value: '<yes>' if value else '<no>'))
-            omitted_var_value: Var[str] = template_field(TemplateFieldConfig(
+            omitted_var_value: Var[str] = ext_field(TemplateFieldConfig(
                 transformer=lambda value: None))
-            illegal_content_tag: Content[str] = template_field(
+            illegal_content_tag: Content[str] = ext_field(
                 TemplateFieldConfig(transformer=lambda value: 'caught!'))
 
         render_env = RenderEnvironment(
@@ -681,7 +694,7 @@ class TestApiE2E:
         # Note: keep this as a forward ref until we have more test coverage in
         # test_templates; this balances out the multiples_recursion test we
         # have there, which checks only the concrete case
-        @template(html, 'page')
+        @template(html_legacy, 'page')
         class PageTemplate:
             name: Var[str]
             nav: Slot[NavSectionTemplate]
@@ -689,37 +702,37 @@ class TestApiE2E:
             main: Slot[DivTemplate]
             footer: Slot[TemplateWithInjection]
 
-        @template(html, 'nav_section')
+        @template(html_legacy, 'nav_section')
         class NavSectionTemplate:
             nav_items: Slot[NavItemTemplate]
 
-        @template(html, 'nav_item')
+        @template(html_legacy, 'nav_item')
         class NavItemTemplate:
             nav_item_content: Slot[NavSectionTemplate | NavLinkTemplate]
 
-        @template(html, 'nav_link')
+        @template(html_legacy, 'nav_link')
         class NavLinkTemplate:
             target: Content[str]
             name: Var[str]
 
-        @template(html, 'div')
+        @template(html_legacy, 'div')
         class DivTemplate:
             div: Slot[DivTemplate]
             body: Var[VarWithFormatting | None] = None
 
-        @template(html, 'injector')
+        @template(html_legacy, 'injector')
         class TemplateWithInjection:
             to_inject: Content[TextSpanTemplate]
 
-        @template(html, 'spantext')
+        @template(html_legacy, 'spantext')
         class TextSpanTemplate:
             span: DynamicClassSlot
 
-        @template(html, 'spantext_em')
+        @template(html_legacy, 'spantext_em')
         class EmTextTemplate:
             text: Var[str]
 
-        @template(html, 'spantext_strong')
+        @template(html_legacy, 'spantext_strong')
         class StrongTextTemplate:
             text: Var[str]
 
@@ -854,16 +867,16 @@ class TestApiE2E:
         nested = '''foo{var.value}'''
         enclosing = '''{slot.foo1: value="1"} {slot.foo2: value="2"}'''
 
-        @template(html, 'enclosing')
+        @template(html_legacy, 'enclosing')
         class EnclosingTemplate:
             foo1: Slot[NestedTemplate | OtherNestedTemplate]
             foo2: Slot[NestedTemplate | OtherNestedTemplate]
 
-        @template(html, 'nested')
+        @template(html_legacy, 'nested')
         class NestedTemplate:
             value: Var[str]
 
-        @template(html, 'nested')
+        @template(html_legacy, 'nested')
         class OtherNestedTemplate:
             value: Var[str]
 
@@ -887,7 +900,7 @@ class TestApiE2E:
         """
         template_txt = 'yolo {@echo_chamber(data.bar)}'
 
-        @template(html, 'template_txt')
+        @template(html_legacy, 'template_txt')
         class FakeTemplate:
             bar: str
 
@@ -923,7 +936,7 @@ class TestApiE2E:
                     'inject_whitespace',
                     TemplateInstanceDataRef('indent_depth'))]
 
-        @template(html, 'template_txt', segment_modifiers=[
+        @template(html_legacy, 'template_txt', segment_modifiers=[
             SegmentModifier(
                 pattern=re.compile(r'(\n)'),
                 modifier=modifier)])
@@ -987,7 +1000,7 @@ class TestApiE2E:
 # they need to be executed during module import -- and there's no way around
 # this. Therefore, this is how we set things up for the two type alias tests,
 # and if the implementation breaks, it'll also break test discovery.
-@template(html, 'nested')
+@template(html_legacy, 'nested')
 class NestedBackreffedTemplate:
     value: Var[str]
 
@@ -996,17 +1009,17 @@ type BackreffedTemplateAlias = NestedBackreffedTemplate
 type FordreffedTemplateAlias = NestedFordreffedTemplate
 
 
-@template(html, 'enclosing')
+@template(html_legacy, 'enclosing')
 class EnclosingTemplateWithBackrefAlias:
     foo1: Slot[BackreffedTemplateAlias]
 
 
-@template(html, 'enclosing')
+@template(html_legacy, 'enclosing')
 class EnclosingTemplateWithFordrefAlias:
     foo1: Slot[FordreffedTemplateAlias]
 
 
-@template(html, 'nested')
+@template(html_legacy, 'nested')
 class NestedFordreffedTemplate:
     value: Var[str]
 

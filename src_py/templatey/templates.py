@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import _MISSING_TYPE
+from dataclasses import KW_ONLY
 from dataclasses import Field
 from dataclasses import dataclass
 from dataclasses import field
@@ -400,7 +401,7 @@ RenderConfig: Annotated[
     ] = TemplateRenderConfig
 
 
-@dataclass(frozen=True, kw_only=True)
+@dataclass(frozen=True)
 class TemplateResourceConfig(DceiConfigProtocol):
     """Resource configs control the specific resource(s) used for a
     template. At a bare minimum, they must specify the template resource
@@ -418,6 +419,7 @@ class TemplateResourceConfig(DceiConfigProtocol):
             Note('''This must be understood by your template loader, whether
                 an explicitly-passed one as part of this env config, or the
                 default one defined on the template environment itself.''')]
+    _: KW_ONLY
     loader: Annotated[
             AsyncTemplateLoader | SyncTemplateLoader | None,
             Note('''Explicit template loaders can be passed to a template
