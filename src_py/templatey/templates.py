@@ -48,8 +48,12 @@ from templatey.parser import InterpolationConfig
 logger = logging.getLogger(__name__)
 
 if typing.TYPE_CHECKING:
+    from _typeshed import DataclassInstance
+
     from templatey.environments import AsyncTemplateLoader
     from templatey.environments import SyncTemplateLoader
+else:
+    DataclassInstance = object
 
 _CLOSURE_ANCHORS: ContextVar[dict[TemplateClass, FrameType]] = ContextVar(
     '_CLOSURE_ANCHORS')
@@ -120,12 +124,6 @@ FieldConfig: Annotated[
         DocnoteConfig(include_in_docs=False),
         Note('Deprecated. Use ``TemplateTemplateFieldConfig`` instead.')
     ] = TemplateFieldConfig
-
-
-template_field: Annotated[
-    ...,
-    DocnoteConfig(include_in_docs=False),
-    Note('Deprecated. Use ``ext_field`` from dceiref instead.')] = ext_field
 
 
 class _DataclassFieldKwargs(TypedDict, total=False):
@@ -245,8 +243,7 @@ class _DataclassKwargs(TypedDict, total=False):
 
 # Deprecated. Use dcei's ``ext_dataclass`` instead.
 @docnote(DocnoteConfig(include_in_docs=False))
-@dataclass_transform(
-    field_specifiers=(template_field, param, field, Field, ext_field))
+@dataclass_transform(field_specifiers=(ext_field, param, field, Field))
 def template[T: type](
         legacy_config: TemplateConfig,
         template_resource_locator: object,
