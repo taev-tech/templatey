@@ -629,7 +629,7 @@ class TestRenderEnvironment:
                         part_index=1,
                         name='foo',
                         config=InterpolationConfig()),),
-                variable_names=frozenset(),
+                variable_names=frozenset({'foo'}),
                 content_names=frozenset(),
                 slot_names=frozenset(),
                 slots={},
