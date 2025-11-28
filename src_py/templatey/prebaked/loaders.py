@@ -41,7 +41,7 @@ class InlineStringTemplateLoader(
         return template_resource_locator
 
 
-INLINE_STRING_LOADER: Annotated[
+INLINE_TEMPLATE_LOADER: Annotated[
         InlineStringTemplateLoader,
         Note('''An ``InlineStringTemplateLoader`` instance, provided for
             convenience, so that libraries shipping their own inline templates
