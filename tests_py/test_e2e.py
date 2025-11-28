@@ -28,6 +28,7 @@ from templatey.parser import TemplateInstanceDataRef
 from templatey.prebaked.configs import html
 from templatey.prebaked.env_funcs import inject_templates
 from templatey.prebaked.loaders import DictTemplateLoader
+from templatey.prebaked.loaders import InlineStringTemplateLoader
 from templatey.prebaked.template_configs import html as html_legacy
 from templatey.prebaked.template_configs import html_escaper
 from templatey.prebaked.template_configs import html_verifier
@@ -1043,6 +1044,77 @@ class TestApiE2E:
         render_result = render_env.render_sync(
             EnclosingTemplateWithFordrefAlias(
                 foo1=[NestedFordreffedTemplate(value=...)]))
+
+        assert render_result == 'foo1'
+
+    def test_multiple_loaders_sync(self):
+        """An outer template with an implicit loader must respect the
+        loader config of an inner template (ie within a slot) with an
+        explicit loader.
+        """
+        nested_text = '''foo{var.value}'''
+
+        enclosing = '''{slot.nested}'''
+
+        @ext_dataclass(
+            html,
+            TemplateResourceConfig('enclosing'))
+        class EnclosingTemplate:
+            nested: Slot[NestedTemplate]
+
+        @ext_dataclass(
+            html,
+            TemplateResourceConfig(
+                nested_text,
+                loader=InlineStringTemplateLoader()))
+        class NestedTemplate:
+            value: Var[str]
+
+        render_env = RenderEnvironment(
+            env_functions=(),
+            template_loader=DictTemplateLoader(
+                templates={
+                    'enclosing': enclosing}))
+
+        render_result = render_env.render_sync(
+            EnclosingTemplate(
+                nested=[NestedTemplate(value='1')]))
+
+        assert render_result == 'foo1'
+
+    @pytest.mark.anyio
+    async def test_multiple_loaders_async(self):
+        """An outer template with an implicit loader must respect the
+        loader config of an inner template (ie within a slot) with an
+        explicit loader.
+        """
+        nested_text = '''foo{var.value}'''
+
+        enclosing = '''{slot.nested}'''
+
+        @ext_dataclass(
+            html,
+            TemplateResourceConfig('enclosing'))
+        class EnclosingTemplate:
+            nested: Slot[NestedTemplate]
+
+        @ext_dataclass(
+            html,
+            TemplateResourceConfig(
+                nested_text,
+                loader=InlineStringTemplateLoader()))
+        class NestedTemplate:
+            value: Var[str]
+
+        render_env = RenderEnvironment(
+            env_functions=(),
+            template_loader=DictTemplateLoader(
+                templates={
+                    'enclosing': enclosing}))
+
+        render_result = await render_env.render_async(
+            EnclosingTemplate(
+                nested=[NestedTemplate(value='1')]))
 
         assert render_result == 'foo1'
 
