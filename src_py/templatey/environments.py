@@ -221,10 +221,6 @@ class RenderEnvironment:
 
         template_xable = cast(type[TemplateIntersectable], template)
         signature = template_xable._templatey_signature
-        template_loader = self._get_loader(
-            signature,
-            self._can_load_async,
-            AsyncTemplateLoader)
 
         # We're doing this sleep just in case everything was cached, and we
         # never await a single loader.
@@ -242,7 +238,6 @@ class RenderEnvironment:
                 for required_template_cls in sig_finalizer.required_loads:
                     task_group.start_soon(
                         self._wrap_load_async,
-                        template_loader,
                         required_template_cls,
                         cast(
                             type[TemplateIntersectable], required_template_cls
@@ -254,7 +249,6 @@ class RenderEnvironment:
 
     async def _wrap_load_async(
             self,
-            template_loader: AsyncTemplateLoader,
             template_cls: TemplateClass,
             template_signature: TemplateSignature,
             preload: dict[TemplateClass, ParsedTemplateResource],
@@ -263,6 +257,13 @@ class RenderEnvironment:
         """This wraps load_async so that we can parallelize the template
         loading.
         """
+        # Note: this has to be done separately for each template class,
+        # because they each might define a separate explicit loader
+        template_loader = self._get_loader(
+            template_signature,
+            self._can_load_async,
+            AsyncTemplateLoader)
+
         requirement_text = await template_loader.load_async(
             template_cls,
             template_signature.resource_locator)
@@ -320,10 +321,6 @@ class RenderEnvironment:
 
         template_xable = cast(type[TemplateIntersectable], template)
         signature = template_xable._templatey_signature
-        template_loader = self._get_loader(
-            signature,
-            self._can_load_sync,
-            SyncTemplateLoader)
 
         with set_complexity_limiter(
             self.slot_tree_complexity_limiter
@@ -338,6 +335,14 @@ class RenderEnvironment:
                 requirement_signature = cast(
                     type[TemplateIntersectable], required_template_cls
                 )._templatey_signature
+
+                # Note: this has to be done separately for each template class,
+                # because they each might define a separate explicit loader
+                template_loader = self._get_loader(
+                    requirement_signature,
+                    self._can_load_sync,
+                    SyncTemplateLoader)
+
                 requirement_text = template_loader.load_sync(
                     required_template_cls,
                     requirement_signature.resource_locator)
