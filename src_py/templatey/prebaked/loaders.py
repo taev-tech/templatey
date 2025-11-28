@@ -11,7 +11,7 @@ except ImportError:
     if typing.TYPE_CHECKING:
         import anyio
 
-from docnote import ClcNote
+from docnote import Note
 
 from templatey._types import TemplateClassInstance
 from templatey.environments import AsyncTemplateLoader
@@ -41,17 +41,23 @@ class InlineStringTemplateLoader(
         return template_resource_locator
 
 
+INLINE_TEMPLATE_LOADER: Annotated[
+        InlineStringTemplateLoader,
+        Note('''An ``InlineStringTemplateLoader`` instance, provided for
+            convenience, so that libraries shipping their own inline templates
+            don't need to create one.''')
+    ] = InlineStringTemplateLoader()
+
+
 class DictTemplateLoader[L: object](
         AsyncTemplateLoader[L], SyncTemplateLoader[L]):
     """A barebones template loader that simply loads templates from a
     dictionary based on whatever key you supply.
     """
     lookup: Annotated[dict[L, str],
-        ClcNote('''
-            Provides direct access to the template lookup. Store literal
+        Note('''Provides direct access to the template lookup. Store literal
             template text here using whatever key matches the resource locator
-            used on your template definitions.
-            ''')]
+            used on your template definitions.''')]
 
     def __init__(self, templates: dict[L, str] | None = None):
         if templates is None:
